@@ -48,7 +48,6 @@ pub enum GlobalConfigKey {
     DecoySelectedWalletId,
     LockedAt,
     CloudBackup,
-    CloudBackupWallets,
 }
 
 impl From<GlobalConfigKey> for &'static str {
@@ -71,7 +70,6 @@ impl From<GlobalConfigKey> for &'static str {
             GlobalConfigKey::DecoySelectedWalletId => "decoy_selected_wallet_id",
             GlobalConfigKey::LockedAt => "locked_at",
             GlobalConfigKey::CloudBackup => "cloud_backup",
-            GlobalConfigKey::CloudBackupWallets => "cloud_backup_wallets",
         }
     }
 }
@@ -289,23 +287,6 @@ impl GlobalConfigTable {
 
     pub fn delete_cloud_backup(&self) -> Result<()> {
         self.delete(GlobalConfigKey::CloudBackup)
-    }
-
-    pub fn cloud_backup_wallets(
-        &self,
-    ) -> Vec<crate::manager::cloud_backup_manager::CloudBackedUpWallet> {
-        let json =
-            self.get(GlobalConfigKey::CloudBackupWallets).unwrap_or(None).unwrap_or_default();
-        serde_json::from_str(&json).unwrap_or_default()
-    }
-
-    pub fn set_cloud_backup_wallets(
-        &self,
-        wallets: &[crate::manager::cloud_backup_manager::CloudBackedUpWallet],
-    ) -> Result<()> {
-        let json = serde_json::to_string(wallets)
-            .map_err(|error| SerdeError::SerializationError(error.to_string()))?;
-        self.set(GlobalConfigKey::CloudBackupWallets, json)
     }
 
     #[uniffi::method(name = "selectedFiatCurrency")]
