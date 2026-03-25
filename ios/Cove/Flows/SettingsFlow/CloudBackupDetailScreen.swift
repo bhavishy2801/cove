@@ -44,7 +44,7 @@ struct CloudBackupDetailScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             refreshSyncHealth()
-            manager.dispatch(.startVerification)
+            manager.dispatch(.refreshDetail)
         }
         .onChange(of: manager.detail) { _, _ in
             refreshSyncHealth()
@@ -123,7 +123,18 @@ private struct VerificationSection: View {
     var body: some View {
         switch manager.verification {
         case .idle:
-            EmptyView()
+            Section {
+                Text("Run verification to confirm your cloud backup can be decrypted and restored")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    manager.dispatch(.startVerification)
+                } label: {
+                    Label("Verify Now", systemImage: "checkmark.shield")
+                }
+                .disabled(isBusy)
+            }
         case .verifying:
             Section {
                 HStack {

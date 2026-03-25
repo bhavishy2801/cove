@@ -48,6 +48,7 @@ struct CoveApp: App {
 
     @State private var startupState: StartupState = .loading
     @State private var bdkMigrationWarning: String?
+    @State private var bootstrapRequestID = 0
 
     init() {
         _ = Keychain(keychain: KeychainAccessor())
@@ -72,13 +73,8 @@ struct CoveApp: App {
     var body: some Scene {
         WindowGroup {
             startupContent
-                .task {
-                    do {
-                        let warning = try await bootstrapWithTimeout()
-                        completeBootstrap(warning: warning)
-                    } catch {
-                        handleBootstrapError(error)
-                    }
+                .task(id: bootstrapRequestID) {
+                    await runBootstrap()
                 }
                 .alert(
                     "Encryption Migration Issue",
@@ -98,6 +94,16 @@ struct CoveApp: App {
 }
 
 extension CoveApp {
+    @MainActor
+    private func runBootstrap() async {
+        do {
+            let warning = try await bootstrapWithTimeout()
+            completeBootstrap(warning: warning)
+        } catch {
+            handleBootstrapError(error)
+        }
+    }
+
     @ViewBuilder
     private var startupContent: some View {
         switch startupState {
@@ -119,6 +125,7 @@ extension CoveApp {
                     rebootstrap()
                 },
                 onWipeOnly: {
+                    startupState = .loading
                     reinitDatabase()
                     rebootstrap()
                 }
@@ -225,7 +232,7 @@ extension CoveApp {
         startInitData(appManager)
 
         let needsOnboarding = !appManager.isTermsAccepted
-            || needsCloudRestoreOffer(appManager: appManager)
+            || shouldRunCloudRestoreCheck(appManager: appManager)
 
         if needsOnboarding {
             Log.info("[STARTUP] entering onboarding flow")
@@ -237,7 +244,8 @@ extension CoveApp {
         }
     }
 
-    private func needsCloudRestoreOffer(appManager: AppManager) -> Bool {
+    private func shouldRunCloudRestoreCheck(appManager: AppManager) -> Bool {
+        guard appManager.isTermsAccepted else { return false }
         guard case .disabled = CloudBackupManager.shared.state else { return false }
         guard !appManager.hasWallets else { return false }
         guard FileManager.default.ubiquityIdentityToken != nil else { return false }
@@ -247,14 +255,7 @@ extension CoveApp {
     /// Re-bootstrap after recovery (Start Fresh / Wipe / Cloud Restore)
     private func rebootstrap() {
         resetBootstrapForRestore()
-        Task {
-            do {
-                let warning = try await bootstrapWithTimeout()
-                completeBootstrap(warning: warning)
-            } catch {
-                handleBootstrapError(error)
-            }
-        }
+        bootstrapRequestID += 1
     }
 
     /// Non-blocking — initData preloads caches and prices but is not required for core functionality

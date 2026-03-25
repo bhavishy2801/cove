@@ -398,4 +398,47 @@ extension ICloudDriveHelper {
 
         return match
     }
+
+    func metadataSubdirectoryNames(parentDirectoryURL: URL) throws -> [String] {
+        let resolvedParent = Self.resolvedPath(parentDirectoryURL.path)
+        let pathPrefix = resolvedParent + "/"
+        let items = try metadataQuery(predicate: NSPredicate(value: true))
+        var names = Set<String>()
+
+        for item in items {
+            guard let metadataPath = Self.metadataPath(for: item) else { continue }
+            guard metadataPath.hasPrefix(pathPrefix) else { continue }
+            guard let firstComponent = String(metadataPath.dropFirst(pathPrefix.count))
+                .split(separator: "/")
+                .first
+            else {
+                continue
+            }
+
+            names.insert(String(firstComponent))
+        }
+
+        return names.sorted()
+    }
+
+    func metadataFileNames(parentDirectoryURL: URL, prefix: String) throws -> [String] {
+        let resolvedParent = Self.resolvedPath(parentDirectoryURL.path)
+        let pathPrefix = resolvedParent + "/"
+        let items = try metadataQuery(predicate: NSPredicate(value: true))
+        var names = Set<String>()
+
+        for item in items {
+            guard let metadataPath = Self.metadataPath(for: item) else { continue }
+            guard metadataPath.hasPrefix(pathPrefix) else { continue }
+
+            let relativePath = String(metadataPath.dropFirst(pathPrefix.count))
+            guard !relativePath.contains("/") else { continue }
+
+            let name = URL(fileURLWithPath: relativePath).lastPathComponent
+            guard name.hasPrefix(prefix) else { continue }
+            names.insert(name)
+        }
+
+        return names.sorted()
+    }
 }

@@ -6,12 +6,13 @@ import SwiftUI
 final class OnboardingManager: OnboardingManagerReconciler, @unchecked Sendable {
     let rust: RustOnboardingManager
     let app: AppManager
-    var step: OnboardingStep = .terms
+    var step: OnboardingStep
     var isComplete = false
     var restoreError: String?
 
     init(app: AppManager) {
         self.app = app
+        self.step = app.isTermsAccepted ? .cloudCheck : .terms
         self.rust = RustOnboardingManager()
         self.rust.listenForUpdates(reconciler: self)
     }
@@ -104,12 +105,14 @@ private struct CloudCheckView: View {
             Spacer()
         }
         .task {
-            let hasBackup = await checkForCloudBackup()
+            let hasBackup = await Task.detached(priority: .userInitiated) {
+                Self.checkForCloudBackup()
+            }.value
             manager.dispatch(.cloudCheckComplete(hasBackup: hasBackup))
         }
     }
 
-    private func checkForCloudBackup() async -> Bool {
+    private static func checkForCloudBackup() -> Bool {
         guard FileManager.default.ubiquityIdentityToken != nil else {
             Log.info("[ONBOARDING] iCloud not available")
             return false
@@ -121,7 +124,7 @@ private struct CloudCheckView: View {
             let hasBackup = (try? cloud.hasAnyCloudBackup()) == true
             Log.info("[ONBOARDING] hasAnyCloudBackup returned: \(hasBackup) attempt=\(attempt)")
             if hasBackup { return true }
-            try? await Task.sleep(for: .seconds(attempt == 1 ? 2 : 3))
+            Thread.sleep(forTimeInterval: attempt == 1 ? 2 : 3)
         }
 
         return false

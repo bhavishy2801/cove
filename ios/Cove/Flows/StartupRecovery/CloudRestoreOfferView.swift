@@ -2,7 +2,7 @@ import SwiftUI
 
 @_exported import CoveCore
 
-/// Shown on fresh install when a cloud backup is detected
+/// Shown after the cloud backup check finds at least one backup
 struct CloudRestoreOfferView: View {
     let onRestore: () -> Void
     let onSkip: () -> Void
