@@ -237,13 +237,15 @@ struct DeviceRestoreView: View {
     // MARK: - Restore Logic
 
     private func runRestore() async {
-        await MainActor.run {
-            backupManager.progress = nil
-            backupManager.restoreReport = nil
+        phase = .restoring()
+
+        // run the blocking FFI call off the main thread so progress
+        // updates dispatched to main can actually be processed
+        let rust = backupManager.rust
+        Task.detached(priority: .userInitiated) {
+            rust.restoreFromCloudBackup()
         }
 
-        phase = .restoring()
-        backupManager.rust.restoreFromCloudBackup()
         await observeRestoreCompletion()
     }
 
@@ -276,7 +278,6 @@ struct DeviceRestoreView: View {
                         try? await Task.sleep(for: .seconds(1))
                     }
 
-                    backupManager.progress = nil
                     phase = .complete(report)
                     try? await Task.sleep(for: .seconds(1))
                     onComplete()
