@@ -17,7 +17,7 @@ use cove_device::keychain::CSPP_NAMESPACE_ID_KEY;
 
 use super::{
     CloudBackupError, CloudBackupReconcileMessage as Message, CloudBackupRestoreReport,
-    CloudBackupState, CloudBackupWalletItem, CloudBackupWalletStatus, RustCloudBackupManager,
+    CloudBackupStatus, CloudBackupWalletItem, CloudBackupWalletStatus, RustCloudBackupManager,
 };
 use crate::database::Database;
 use crate::database::global_config::CloudBackup;
@@ -185,7 +185,7 @@ impl RustCloudBackupManager {
     }
 
     pub(crate) fn do_enable_cloud_backup(&self) -> Result<(), CloudBackupError> {
-        self.send(Message::StateChanged(CloudBackupState::Enabling));
+        self.send(Message::StatusChanged(CloudBackupStatus::Enabling));
 
         let passkey = PasskeyAccess::global();
         if !passkey.is_prf_supported() {
@@ -228,14 +228,14 @@ impl RustCloudBackupManager {
             NamespaceMatchOutcome::UserDeclined => {
                 info!("Enable: user cancelled passkey picker during namespace matching");
                 self.send(Message::PasskeyDiscoveryCancelled);
-                self.send(Message::StateChanged(CloudBackupState::Disabled));
+                self.send(Message::StatusChanged(CloudBackupStatus::Disabled));
                 Ok(())
             }
 
             NamespaceMatchOutcome::NoMatch => {
                 info!("Enable: passkey didn't match existing backups, asking user to confirm");
                 self.send(Message::ExistingBackupFound);
-                self.send(Message::StateChanged(CloudBackupState::Disabled));
+                self.send(Message::StatusChanged(CloudBackupStatus::Disabled));
                 Ok(())
             }
 
@@ -289,7 +289,7 @@ impl RustCloudBackupManager {
         self.enqueue_pending_uploads(&matched.namespace_id, uploaded_wallet_record_ids)?;
 
         self.send(Message::EnableComplete);
-        self.send(Message::StateChanged(CloudBackupState::Enabled));
+        self.send(Message::StatusChanged(CloudBackupStatus::Enabled));
         info!("Cloud backup enabled (recovered existing namespace)");
         Ok(())
     }
@@ -315,7 +315,7 @@ impl RustCloudBackupManager {
             Ok(result) => result,
             Err(CloudBackupError::PasskeyDiscoveryCancelled) => {
                 self.send(Message::PasskeyDiscoveryCancelled);
-                self.send(Message::StateChanged(CloudBackupState::Disabled));
+                self.send(Message::StatusChanged(CloudBackupStatus::Disabled));
                 return Ok(());
             }
             Err(e) => return Err(e),
@@ -346,7 +346,7 @@ impl RustCloudBackupManager {
     }
 
     pub(super) fn do_restore_from_cloud_backup(&self) -> Result<(), CloudBackupError> {
-        self.send(Message::StateChanged(CloudBackupState::Restoring));
+        self.send(Message::StatusChanged(CloudBackupStatus::Restoring));
 
         let cloud = CloudStorage::global();
         let keychain = Keychain::global();
@@ -428,7 +428,7 @@ impl RustCloudBackupManager {
             .map_err_prefix("persist cloud backup state", CloudBackupError::Internal)?;
 
         self.send(Message::RestoreComplete(report));
-        self.send(Message::StateChanged(CloudBackupState::Enabled));
+        self.send(Message::StatusChanged(CloudBackupStatus::Enabled));
 
         info!("Cloud backup restore complete");
         Ok(())
@@ -472,7 +472,7 @@ impl RustCloudBackupManager {
         )?;
 
         self.send(Message::EnableComplete);
-        self.send(Message::StateChanged(CloudBackupState::Enabled));
+        self.send(Message::StatusChanged(CloudBackupStatus::Enabled));
         info!("Cloud backup enabled successfully");
         Ok(())
     }

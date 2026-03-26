@@ -5,7 +5,7 @@ mod wrapper_repair;
 use cove_cspp::CsppStore as _;
 use cove_device::cloud_storage::{CloudStorage, CloudStorageError};
 use cove_device::keychain::{CSPP_CREDENTIAL_ID_KEY, CSPP_PRF_SALT_KEY, Keychain};
-use cove_device::passkey::PasskeyAccess;
+use cove_device::passkey::{PasskeyAccess, PasskeyCredentialPresence};
 use cove_util::ResultExt as _;
 use tracing::{error, info, warn};
 
@@ -13,11 +13,17 @@ use self::session::VerificationSession;
 use self::wrapper_repair::{WrapperRepairOperation, WrapperRepairStrategy};
 use super::wallets::count_all_wallets;
 use super::{
-    CloudBackupError, CloudBackupState, DeepVerificationFailure, DeepVerificationResult, RP_ID,
+    CloudBackupError, CloudBackupStatus, DeepVerificationFailure, DeepVerificationResult, RP_ID,
     RustCloudBackupManager, VerificationFailureKind,
 };
 use crate::database::Database;
 use crate::database::global_config::CloudBackup;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntegrityDowngrade {
+    Unverified,
+    PasskeyMissing,
+}
 
 impl RustCloudBackupManager {
     /// Background startup health check for cloud backup integrity
@@ -25,8 +31,8 @@ impl RustCloudBackupManager {
     /// Verifies the master key is in the keychain and backup files exist in iCloud.
     /// Returns None if everything is OK, Some(warning) if there's a problem
     pub(super) fn verify_backup_integrity_impl(&self) -> Option<String> {
-        let state = self.snapshot.read().state.clone();
-        if !matches!(state, CloudBackupState::Enabled | CloudBackupState::PasskeyMissing) {
+        let state = self.state.read().status.clone();
+        if !matches!(state, CloudBackupStatus::Enabled | CloudBackupStatus::PasskeyMissing) {
             return None;
         }
 
@@ -38,18 +44,46 @@ impl RustCloudBackupManager {
             issues.push("master key not found in keychain");
         }
 
-        if keychain.get(CSPP_CREDENTIAL_ID_KEY.into()).is_none() {
+        let mut downgrade = None;
+        let has_prf_salt = keychain.get(CSPP_PRF_SALT_KEY.into()).is_some();
+        let stored_credential_id = load_stored_credential_id(keychain);
+
+        if stored_credential_id.is_none() {
             issues
                 .push("passkey credential not found — open Cloud Backup in Settings to re-verify");
+            downgrade = Some(IntegrityDowngrade::Unverified);
         }
-        if keychain.get(CSPP_PRF_SALT_KEY.into()).is_none() {
+        if !has_prf_salt {
             issues.push("passkey salt not found — open Cloud Backup in Settings to re-verify");
+            downgrade = Some(IntegrityDowngrade::Unverified);
+        }
+
+        if let Some(credential_id) = stored_credential_id.as_ref()
+            && has_prf_salt
+        {
+            match PasskeyAccess::global()
+                .check_passkey_presence(RP_ID.to_string(), credential_id.clone())
+            {
+                PasskeyCredentialPresence::Present => {}
+                PasskeyCredentialPresence::Missing => {
+                    issues.push(
+                        "stored passkey credential is missing — open Cloud Backup in Settings to repair",
+                    );
+                    downgrade = Some(IntegrityDowngrade::PasskeyMissing);
+                    keychain.clear_cspp_passkey();
+                }
+                PasskeyCredentialPresence::Indeterminate => {
+                    issues.push("stored passkey could not be revalidated");
+                    downgrade.get_or_insert(IntegrityDowngrade::Unverified);
+                }
+            }
         }
 
         let namespace = match self.current_namespace_id() {
             Ok(ns) => ns,
             Err(_) => {
                 issues.push("namespace_id not found in keychain");
+                self.persist_integrity_downgrade(downgrade);
                 return Some(issues.join("; "));
             }
         };
@@ -78,6 +112,8 @@ impl RustCloudBackupManager {
             }
         }
 
+        self.persist_integrity_downgrade(downgrade);
+
         if issues.is_empty() {
             info!("Backup integrity check passed");
             None
@@ -95,8 +131,8 @@ impl RustCloudBackupManager {
         &self,
         force_discoverable: bool,
     ) -> DeepVerificationResult {
-        let state = self.snapshot.read().state.clone();
-        if !matches!(state, CloudBackupState::Enabled | CloudBackupState::PasskeyMissing) {
+        let state = self.state.read().status.clone();
+        if !matches!(state, CloudBackupStatus::Enabled | CloudBackupStatus::PasskeyMissing) {
             return DeepVerificationResult::NotEnabled;
         }
 
@@ -148,13 +184,13 @@ impl RustCloudBackupManager {
             }
 
             let runtime_state = match new_state {
-                CloudBackup::PasskeyMissing { .. } => CloudBackupState::PasskeyMissing,
+                CloudBackup::PasskeyMissing { .. } => CloudBackupStatus::PasskeyMissing,
                 CloudBackup::Enabled { .. } | CloudBackup::Unverified { .. } => {
-                    CloudBackupState::Enabled
+                    CloudBackupStatus::Enabled
                 }
                 CloudBackup::Disabled => return,
             };
-            self.send(super::CloudBackupReconcileMessage::StateChanged(runtime_state));
+            self.send(super::CloudBackupReconcileMessage::StatusChanged(runtime_state));
         }
     }
 
@@ -192,5 +228,106 @@ impl RustCloudBackupManager {
         force_discoverable: bool,
     ) -> Result<DeepVerificationResult, CloudBackupError> {
         VerificationSession::new(self, force_discoverable)?.run()
+    }
+}
+
+impl RustCloudBackupManager {
+    fn persist_integrity_downgrade(&self, downgrade: Option<IntegrityDowngrade>) {
+        let Some(downgrade) = downgrade else {
+            return;
+        };
+
+        let db = Database::global();
+        let current = db.global_config.cloud_backup();
+        let Some(new_state) = downgrade_cloud_backup_state(&current, downgrade) else {
+            return;
+        };
+
+        if let Err(error) = db.global_config.set_cloud_backup(&new_state) {
+            error!("Failed to persist backup integrity state: {error}");
+            return;
+        }
+
+        let runtime_state = match new_state {
+            CloudBackup::PasskeyMissing { .. } => CloudBackupStatus::PasskeyMissing,
+            CloudBackup::Enabled { .. } | CloudBackup::Unverified { .. } => {
+                CloudBackupStatus::Enabled
+            }
+            CloudBackup::Disabled => return,
+        };
+        self.send(super::CloudBackupReconcileMessage::StatusChanged(runtime_state));
+    }
+}
+
+pub(super) fn load_stored_credential_id(keychain: &Keychain) -> Option<Vec<u8>> {
+    keychain.get(CSPP_CREDENTIAL_ID_KEY.into()).and_then(|hex_str| {
+        hex::decode(hex_str)
+            .inspect_err(|error| warn!("Failed to decode stored credential_id: {error}"))
+            .ok()
+    })
+}
+
+fn downgrade_cloud_backup_state(
+    current: &CloudBackup,
+    downgrade: IntegrityDowngrade,
+) -> Option<CloudBackup> {
+    let (last_sync, wallet_count) = match current {
+        CloudBackup::Enabled { last_sync, wallet_count }
+        | CloudBackup::Unverified { last_sync, wallet_count }
+        | CloudBackup::PasskeyMissing { last_sync, wallet_count } => (*last_sync, *wallet_count),
+        CloudBackup::Disabled => return None,
+    };
+
+    match downgrade {
+        IntegrityDowngrade::Unverified => match current {
+            CloudBackup::Enabled { .. } => {
+                Some(CloudBackup::Unverified { last_sync, wallet_count })
+            }
+            CloudBackup::Unverified { .. } | CloudBackup::PasskeyMissing { .. } => None,
+            CloudBackup::Disabled => None,
+        },
+        IntegrityDowngrade::PasskeyMissing => match current {
+            CloudBackup::Enabled { .. } | CloudBackup::Unverified { .. } => {
+                Some(CloudBackup::PasskeyMissing { last_sync, wallet_count })
+            }
+            CloudBackup::PasskeyMissing { .. } | CloudBackup::Disabled => None,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn downgrade_state_marks_enabled_as_unverified() {
+        let current = CloudBackup::Enabled { last_sync: Some(5), wallet_count: Some(2) };
+
+        let updated =
+            downgrade_cloud_backup_state(&current, IntegrityDowngrade::Unverified).unwrap();
+
+        assert_eq!(updated, CloudBackup::Unverified { last_sync: Some(5), wallet_count: Some(2) });
+    }
+
+    #[test]
+    fn downgrade_state_marks_unverified_as_passkey_missing() {
+        let current = CloudBackup::Unverified { last_sync: Some(7), wallet_count: Some(3) };
+
+        let updated =
+            downgrade_cloud_backup_state(&current, IntegrityDowngrade::PasskeyMissing).unwrap();
+
+        assert_eq!(
+            updated,
+            CloudBackup::PasskeyMissing { last_sync: Some(7), wallet_count: Some(3) }
+        );
+    }
+
+    #[test]
+    fn downgrade_state_keeps_passkey_missing_when_only_unverified_requested() {
+        let current = CloudBackup::PasskeyMissing { last_sync: Some(11), wallet_count: Some(4) };
+
+        let updated = downgrade_cloud_backup_state(&current, IntegrityDowngrade::Unverified);
+
+        assert!(updated.is_none());
     }
 }

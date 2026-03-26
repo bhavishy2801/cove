@@ -1,10 +1,9 @@
-use cove_cspp::CsppStore as _;
 use cove_cspp::master_key::MasterKey;
 use cove_cspp::master_key_crypto;
 use cove_cspp::wallet_crypto;
 use cove_device::cloud_storage::{CloudStorage, CloudStorageError};
-use cove_device::keychain::{CSPP_CREDENTIAL_ID_KEY, Keychain};
-use cove_device::passkey::PasskeyAccess;
+use cove_device::keychain::Keychain;
+use cove_device::passkey::{PasskeyAccess, PasskeyCredentialPresence};
 use cove_util::ResultExt as _;
 use tracing::{info, warn};
 use zeroize::Zeroizing;
@@ -14,6 +13,7 @@ use super::super::{
     DeepVerificationResult, RP_ID, RustCloudBackupManager, VerificationFailureKind,
     cloud_inventory::CloudWalletInventory,
 };
+use super::load_stored_credential_id;
 use super::passkey_auth::PasskeyAuthOutcome;
 use super::wrapper_repair::{WrapperRepairError, WrapperRepairOperation, WrapperRepairStrategy};
 use crate::manager::cloud_backup_manager::pending::{
@@ -428,24 +428,61 @@ impl<'a> VerificationSession<'a> {
     /// we avoid downgrading persisted state. If the credential is gone the
     /// passkey is durably missing and the user needs repair
     fn resolve_cancellation_outcome(&self) -> DeepVerificationResult {
-        let stored_credential_id: Option<Vec<u8>> =
-            self.keychain.get(CSPP_CREDENTIAL_ID_KEY.into()).and_then(|hex_str| {
-                hex::decode(hex_str)
-                    .inspect_err(|error| warn!("Failed to decode stored credential_id: {error}"))
-                    .ok()
-            });
-
-        if let Some(credential_id) = stored_credential_id {
-            if self.passkey.check_passkey_exists(RP_ID.to_string(), credential_id) {
-                info!("Passkey picker cancelled but stored credential still exists");
-                return DeepVerificationResult::PasskeyConfirmed(self.detail());
+        if let Some(credential_id) = load_stored_credential_id(&self.keychain) {
+            match self.passkey.check_passkey_presence(RP_ID.to_string(), credential_id) {
+                PasskeyCredentialPresence::Present => {
+                    info!("Passkey picker cancelled but stored credential still exists");
+                    cancellation_outcome(PasskeyCredentialPresence::Present, self.detail())
+                }
+                PasskeyCredentialPresence::Missing => {
+                    info!("Passkey picker cancelled and stored credential is missing");
+                    self.keychain.clear_cspp_passkey();
+                    cancellation_outcome(PasskeyCredentialPresence::Missing, self.detail())
+                }
+                PasskeyCredentialPresence::Indeterminate => {
+                    info!(
+                        "Passkey picker cancelled and stored credential could not be revalidated"
+                    );
+                    cancellation_outcome(PasskeyCredentialPresence::Indeterminate, self.detail())
+                }
             }
-
-            info!("Passkey picker cancelled and stored credential failed silent check");
         } else {
             info!("Passkey picker cancelled and no stored credential found");
+            DeepVerificationResult::PasskeyMissing(self.detail())
         }
+    }
+}
 
-        DeepVerificationResult::PasskeyMissing(self.detail())
+fn cancellation_outcome(
+    presence: PasskeyCredentialPresence,
+    detail: Option<CloudBackupDetail>,
+) -> DeepVerificationResult {
+    match presence {
+        PasskeyCredentialPresence::Present => DeepVerificationResult::PasskeyConfirmed(detail),
+        PasskeyCredentialPresence::Missing => DeepVerificationResult::PasskeyMissing(detail),
+        PasskeyCredentialPresence::Indeterminate => DeepVerificationResult::UserCancelled(detail),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_outcome_confirms_present_passkey() {
+        let result = cancellation_outcome(PasskeyCredentialPresence::Present, None);
+        assert!(matches!(result, DeepVerificationResult::PasskeyConfirmed(None)));
+    }
+
+    #[test]
+    fn cancellation_outcome_marks_missing_passkey() {
+        let result = cancellation_outcome(PasskeyCredentialPresence::Missing, None);
+        assert!(matches!(result, DeepVerificationResult::PasskeyMissing(None)));
+    }
+
+    #[test]
+    fn cancellation_outcome_treats_indeterminate_as_user_cancelled() {
+        let result = cancellation_outcome(PasskeyCredentialPresence::Indeterminate, None);
+        assert!(matches!(result, DeepVerificationResult::UserCancelled(None)));
     }
 }

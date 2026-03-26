@@ -6,7 +6,7 @@ use tracing::info;
 use super::super::cloud_inventory::CloudWalletInventory;
 use super::super::{
     CLOUD_BACKUP_MANAGER, CloudBackupDetail, CloudBackupDetailResult, CloudBackupReconcileMessage,
-    CloudBackupState, RustCloudBackupManager,
+    CloudBackupStatus, RustCloudBackupManager,
 };
 use crate::database::Database;
 
@@ -16,9 +16,9 @@ impl RustCloudBackupManager {
     /// Returns None if disabled. On NotFound, re-uploads all wallets automatically.
     /// On other errors, returns AccessError so the UI can offer a re-upload button
     pub(crate) fn refresh_cloud_backup_detail(&self) -> Option<CloudBackupDetailResult> {
-        let state = self.snapshot.read().state.clone();
-        if !matches!(state, CloudBackupState::Enabled | CloudBackupState::PasskeyMissing) {
-            info!("refresh_cloud_backup_detail: skipping, state={state:?}");
+        let status = self.state.read().status.clone();
+        if !matches!(status, CloudBackupStatus::Enabled | CloudBackupStatus::PasskeyMissing) {
+            info!("refresh_cloud_backup_detail: skipping, status={status:?}");
             return None;
         }
 
