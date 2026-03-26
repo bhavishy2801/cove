@@ -23,6 +23,9 @@ use crate::database::global_config::CloudBackup;
 use crate::wallet::metadata::{WalletMode as LocalWalletMode, WalletType};
 
 use self::wallets::{all_local_wallets, count_all_wallets};
+use super::cloud_backup_detail_manager::{
+    CloudOnlyOperation, CloudOnlyState, RecoveryState, SyncState, VerificationState,
+};
 
 type LocalWalletSecret = crate::backup::model::WalletSecret;
 
@@ -46,6 +49,7 @@ pub enum CloudBackupState {
 
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum CloudBackupReconcileMessage {
+    Updated,
     StateChanged(CloudBackupState),
     ProgressUpdated { completed: u32, total: u32 },
     EnableComplete,
@@ -61,6 +65,12 @@ pub struct CloudBackupRestoreReport {
     pub wallets_restored: u32,
     pub wallets_failed: u32,
     pub failed_wallet_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, uniffi::Record)]
+pub struct CloudBackupProgress {
+    pub completed: u32,
+    pub total: u32,
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, uniffi::Enum)]
@@ -142,6 +152,43 @@ pub enum VerificationFailureKind {
     UnsupportedVersion,
 }
 
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CloudBackupSnapshot {
+    pub state: CloudBackupState,
+    pub progress: Option<CloudBackupProgress>,
+    pub restore_report: Option<CloudBackupRestoreReport>,
+    pub sync_error: Option<String>,
+    pub has_pending_upload_verification: bool,
+    pub is_unverified: bool,
+    pub is_configured: bool,
+    pub detail: Option<CloudBackupDetail>,
+    pub verification: VerificationState,
+    pub sync: SyncState,
+    pub recovery: RecoveryState,
+    pub cloud_only: CloudOnlyState,
+    pub cloud_only_operation: CloudOnlyOperation,
+}
+
+impl Default for CloudBackupSnapshot {
+    fn default() -> Self {
+        Self {
+            state: CloudBackupState::Disabled,
+            progress: None,
+            restore_report: None,
+            sync_error: None,
+            has_pending_upload_verification: false,
+            is_unverified: false,
+            is_configured: false,
+            detail: None,
+            verification: VerificationState::Idle,
+            sync: SyncState::Idle,
+            recovery: RecoveryState::Idle,
+            cloud_only: CloudOnlyState::NotFetched,
+            cloud_only_operation: CloudOnlyOperation::Idle,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CloudBackupError {
     #[error("not supported: {0}")]
@@ -173,8 +220,7 @@ pub trait CloudBackupManagerReconciler: Send + Sync + std::fmt::Debug + 'static 
 
 #[derive(Clone, Debug, uniffi::Object)]
 pub struct RustCloudBackupManager {
-    #[allow(dead_code)]
-    pub state: Arc<RwLock<CloudBackupState>>,
+    pub snapshot: Arc<RwLock<CloudBackupSnapshot>>,
     pub reconciler: Sender<Message>,
     pub reconcile_receiver: Arc<Receiver<Message>>,
     pending_upload_verifier_running: Arc<AtomicBool>,
@@ -185,7 +231,7 @@ impl RustCloudBackupManager {
         let (sender, receiver) = flume::bounded(1000);
 
         Self {
-            state: Arc::new(RwLock::new(CloudBackupState::Disabled)),
+            snapshot: Arc::new(RwLock::new(CloudBackupSnapshot::default())),
             reconciler: sender,
             reconcile_receiver: Arc::new(receiver),
             pending_upload_verifier_running: Arc::new(AtomicBool::new(false)),
@@ -193,14 +239,63 @@ impl RustCloudBackupManager {
         .into()
     }
 
-    fn send(&self, message: Message) {
-        if let Message::StateChanged(state) = &message {
-            *self.state.write() = state.clone();
+    fn refresh_snapshot_flags(snapshot: &mut CloudBackupSnapshot) {
+        let db_state = Database::global().global_config.cloud_backup();
+        snapshot.is_unverified = matches!(db_state, CloudBackup::Unverified { .. });
+        snapshot.is_configured = !matches!(db_state, CloudBackup::Disabled);
+    }
+
+    fn apply_message_to_snapshot(&self, message: &Message) {
+        let mut snapshot = self.snapshot.write();
+
+        match message {
+            Message::Updated => {}
+            Message::StateChanged(state) => {
+                snapshot.state = state.clone();
+
+                if matches!(state, CloudBackupState::Enabling | CloudBackupState::Restoring) {
+                    snapshot.progress = None;
+                    snapshot.restore_report = None;
+                }
+            }
+            Message::ProgressUpdated { completed, total } => {
+                snapshot.progress =
+                    Some(CloudBackupProgress { completed: *completed, total: *total });
+            }
+            Message::EnableComplete => snapshot.progress = None,
+            Message::RestoreComplete(report) => {
+                snapshot.restore_report = Some(report.clone());
+                snapshot.progress = None;
+            }
+            Message::SyncFailed(error) => snapshot.sync_error = Some(error.clone()),
+            Message::PendingUploadVerificationChanged { pending } => {
+                snapshot.has_pending_upload_verification = *pending;
+            }
+            Message::ExistingBackupFound | Message::PasskeyDiscoveryCancelled => {}
         }
+
+        Self::refresh_snapshot_flags(&mut snapshot);
+    }
+
+    fn send(&self, message: Message) {
+        self.apply_message_to_snapshot(&message);
 
         if let Err(error) = self.reconciler.send(message) {
             error!("unable to send cloud backup message: {error:?}");
         }
+    }
+
+    pub(crate) fn update_snapshot<F>(&self, update: F)
+    where
+        F: FnOnce(&mut CloudBackupSnapshot),
+    {
+        {
+            let mut snapshot = self.snapshot.write();
+            update(&mut snapshot);
+            Self::refresh_snapshot_flags(&mut snapshot);
+        }
+
+        self.send(Message::Updated);
     }
 
     fn current_namespace_id(&self) -> Result<String, CloudBackupError> {
@@ -219,8 +314,8 @@ impl RustCloudBackupManager {
         F: FnOnce(Arc<Self>) -> Result<(), CloudBackupError> + Send + 'static,
     {
         {
-            let state = self.state.read();
-            if matches!(*state, CloudBackupState::Enabling | CloudBackupState::Restoring) {
+            let state = self.snapshot.read().state.clone();
+            if matches!(state, CloudBackupState::Enabling | CloudBackupState::Restoring) {
                 warn!("{operation_name} called while {state:?}, ignoring");
                 return;
             }
@@ -258,7 +353,14 @@ impl RustCloudBackupManager {
     }
 
     pub fn current_state(&self) -> CloudBackupState {
-        self.state.read().clone()
+        self.snapshot.read().state.clone()
+    }
+
+    pub fn snapshot(&self) -> CloudBackupSnapshot {
+        let mut snapshot = self.snapshot.read().clone();
+        Self::refresh_snapshot_flags(&mut snapshot);
+        snapshot.has_pending_upload_verification = self.has_pending_cloud_upload_verification();
+        snapshot
     }
 
     /// Number of wallets in the cloud backup
@@ -283,9 +385,9 @@ impl RustCloudBackupManager {
     /// even before the reconciler has delivered its first message
     pub fn sync_persisted_state(&self) {
         let db_state = Database::global().global_config.cloud_backup();
-        let mut state = self.state.write();
+        let mut snapshot = self.snapshot.write();
 
-        if matches!(*state, CloudBackupState::Disabled) {
+        if matches!(snapshot.state, CloudBackupState::Disabled) {
             let new_state = match db_state {
                 CloudBackup::Enabled { .. } | CloudBackup::Unverified { .. } => {
                     CloudBackupState::Enabled
@@ -294,9 +396,10 @@ impl RustCloudBackupManager {
                 CloudBackup::Disabled => CloudBackupState::Disabled,
             };
 
-            if *state != new_state {
-                *state = new_state.clone();
-                drop(state);
+            if snapshot.state != new_state {
+                snapshot.state = new_state.clone();
+                Self::refresh_snapshot_flags(&mut snapshot);
+                drop(snapshot);
                 self.send(Message::StateChanged(new_state));
             }
         }
@@ -357,6 +460,9 @@ impl RustCloudBackupManager {
         let _ = db.global_config.set_cloud_backup(&CloudBackup::Disabled);
         let _ = db.cloud_backup_upload_verification.delete();
 
+        self.update_snapshot(|snapshot| {
+            *snapshot = CloudBackupSnapshot::default();
+        });
         self.send(Message::StateChanged(CloudBackupState::Disabled));
         self.send(Message::PendingUploadVerificationChanged { pending: false });
         info!("Debug: reset cloud backup local state (including master key)");
@@ -422,10 +528,8 @@ impl RustCloudBackupManager {
     ///
     /// Returns immediately if cloud backup isn't enabled (e.g. during restore)
     pub fn backup_new_wallet(&self, metadata: crate::wallet::metadata::WalletMetadata) {
-        if !matches!(
-            *self.state.read(),
-            CloudBackupState::Enabled | CloudBackupState::PasskeyMissing
-        ) {
+        let state = self.snapshot.read().state.clone();
+        if !matches!(state, CloudBackupState::Enabled | CloudBackupState::PasskeyMissing) {
             return;
         }
 

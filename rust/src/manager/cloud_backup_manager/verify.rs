@@ -25,10 +25,8 @@ impl RustCloudBackupManager {
     /// Verifies the master key is in the keychain and backup files exist in iCloud.
     /// Returns None if everything is OK, Some(warning) if there's a problem
     pub(super) fn verify_backup_integrity_impl(&self) -> Option<String> {
-        if !matches!(
-            *self.state.read(),
-            CloudBackupState::Enabled | CloudBackupState::PasskeyMissing
-        ) {
+        let state = self.snapshot.read().state.clone();
+        if !matches!(state, CloudBackupState::Enabled | CloudBackupState::PasskeyMissing) {
             return None;
         }
 
@@ -97,10 +95,8 @@ impl RustCloudBackupManager {
         &self,
         force_discoverable: bool,
     ) -> DeepVerificationResult {
-        if !matches!(
-            *self.state.read(),
-            CloudBackupState::Enabled | CloudBackupState::PasskeyMissing
-        ) {
+        let state = self.snapshot.read().state.clone();
+        if !matches!(state, CloudBackupState::Enabled | CloudBackupState::PasskeyMissing) {
             return DeepVerificationResult::NotEnabled;
         }
 
@@ -145,10 +141,20 @@ impl RustCloudBackupManager {
             DeepVerificationResult::NotEnabled => return,
         };
 
-        if current != new_state
-            && let Err(error) = db.global_config.set_cloud_backup(&new_state)
-        {
-            error!("Failed to persist verification state: {error}");
+        if current != new_state {
+            if let Err(error) = db.global_config.set_cloud_backup(&new_state) {
+                error!("Failed to persist verification state: {error}");
+                return;
+            }
+
+            let runtime_state = match new_state {
+                CloudBackup::PasskeyMissing { .. } => CloudBackupState::PasskeyMissing,
+                CloudBackup::Enabled { .. } | CloudBackup::Unverified { .. } => {
+                    CloudBackupState::Enabled
+                }
+                CloudBackup::Disabled => return,
+            };
+            self.send(super::CloudBackupReconcileMessage::StateChanged(runtime_state));
         }
     }
 
