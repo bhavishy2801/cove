@@ -66,7 +66,7 @@ struct SettingsContainer: View {
             case .about:
                 AboutScreen()
             case .cloudBackup:
-                if CloudBackupManager.shared.rust.isCloudBackupEnabled() {
+                if CloudBackupManager.shared.isConfigured {
                     CloudBackupDetailScreen()
                 }
             }

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct CloudBackupDetailScreen: View {
-    @State private var manager = CloudBackupDetailManager()
+    @State private var manager = CloudBackupManager.shared
     @State private var syncHealth: ICloudDriveHelper.SyncHealth = .noFiles
     @State private var showRecreateConfirmation = false
     @State private var showReinitializeConfirmation = false
@@ -24,41 +24,50 @@ struct CloudBackupDetailScreen: View {
         return false
     }
 
+    private var isPasskeyMissing: Bool {
+        if case .passkeyMissing = manager.state { return true }
+        return false
+    }
+
     var body: some View {
         Form {
-            if isVerifying, !hasVerificationResult {
-                Section {
-                    VStack {
-                        ProgressView("Verifying cloud backup...")
+            if isPasskeyMissing {
+                MissingPasskeyContent(manager: manager)
+            } else {
+                if isVerifying, !hasVerificationResult {
+                    Section {
+                        VStack {
+                            ProgressView("Verifying cloud backup...")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+                } else if let detail = manager.detail, !isCancelled {
+                    DetailFormContent(
+                        detail: detail,
+                        syncHealth: syncHealth,
+                        manager: manager
+                    )
                 }
-            } else if let detail = manager.detail, !isCancelled {
-                DetailFormContent(
-                    detail: detail,
-                    syncHealth: syncHealth,
-                    manager: manager
+
+                VerificationSection(
+                    manager: manager,
+                    onRecreate: { showRecreateConfirmation = true },
+                    onReinitialize: { showReinitializeConfirmation = true }
                 )
             }
-
-            VerificationSection(
-                manager: manager,
-                onRecreate: { showRecreateConfirmation = true },
-                onReinitialize: { showReinitializeConfirmation = true }
-            )
         }
         .navigationTitle("Cloud Backup")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            refreshSyncHealth()
-            manager.dispatch(.refreshDetail)
+            guard !isPasskeyMissing else { return }
 
-            if CloudBackupManager.shared.rust.isCloudBackupPasskeyMissing() {
-                manager.dispatch(.repairPasskey)
-            } else if !hasAutoVerified {
+            refreshSyncHealth()
+            manager.refreshDetail()
+
+            if !hasAutoVerified {
                 hasAutoVerified = true
-                manager.dispatch(.startVerificationDiscoverable)
+                manager.startVerificationDiscoverable()
             }
         }
         .onChange(of: manager.detail) { _, _ in
@@ -73,7 +82,7 @@ struct CloudBackupDetailScreen: View {
             titleVisibility: .visible
         ) {
             Button("Recreate", role: .destructive) {
-                manager.dispatch(.recreateManifest)
+                manager.recreateManifest()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -87,7 +96,7 @@ struct CloudBackupDetailScreen: View {
             titleVisibility: .visible
         ) {
             Button("Reinitialize", role: .destructive) {
-                manager.dispatch(.reinitializeBackup)
+                manager.reinitializeBackup()
             }
             Button("Cancel", role: .cancel) {}
         } message: {

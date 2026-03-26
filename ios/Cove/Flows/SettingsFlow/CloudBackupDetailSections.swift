@@ -12,7 +12,7 @@ private extension CloudOnlyOperation {
 struct DetailFormContent: View {
     let detail: CloudBackupDetail
     let syncHealth: ICloudDriveHelper.SyncHealth
-    let manager: CloudBackupDetailManager
+    let manager: CloudBackupManager
 
     private var showCloudOnlySection: Bool {
         switch manager.cloudOnly {
@@ -32,6 +32,74 @@ struct DetailFormContent: View {
         }
         if showCloudOnlySection {
             CloudOnlySection(manager: manager)
+        }
+    }
+}
+
+struct MissingPasskeyContent: View {
+    let manager: CloudBackupManager
+
+    private var isRepairing: Bool {
+        if case .recovering(.repairPasskey) = manager.recovery { return true }
+        return false
+    }
+
+    private var repairError: String? {
+        if case let .failed(action: .repairPasskey, error: error) = manager.recovery {
+            return error
+        }
+        return nil
+    }
+
+    var body: some View {
+        Section {
+            VStack(spacing: 12) {
+                Image(systemName: "exclamationmark.icloud.fill")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.red)
+
+                Text("Cloud Backup Passkey Missing")
+                    .font(.headline)
+                    .foregroundStyle(.red)
+
+                Text(
+                    "Your cloud backup is not accessible until you add a new passkey. Without it, your backups can't be restored."
+                )
+                .font(.subheadline)
+                .foregroundStyle(.red.opacity(0.85))
+                .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        }
+
+        Section {
+            Button {
+                manager.repairPasskey()
+            } label: {
+                if isRepairing {
+                    HStack {
+                        ProgressView()
+                            .padding(.trailing, 4)
+                        Text("Creating Passkey...")
+                    }
+                } else {
+                    Label("Add New Passkey", systemImage: "person.badge.key")
+                }
+            }
+            .disabled(isRepairing)
+
+            Text("Add a new passkey to make your existing cloud backup accessible again")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        if let repairError {
+            Section {
+                Label(repairError, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .font(.caption)
+            }
         }
     }
 }
@@ -111,7 +179,7 @@ struct HeaderSection: View {
 }
 
 struct CloudOnlySection: View {
-    let manager: CloudBackupDetailManager
+    let manager: CloudBackupManager
     @State private var selectedWallet: CloudBackupWalletItem?
     @State private var walletToDelete: CloudBackupWalletItem?
 
@@ -138,7 +206,7 @@ struct CloudOnlySection: View {
 }
 
 private struct CloudOnlySectionContent: View {
-    let manager: CloudBackupDetailManager
+    let manager: CloudBackupManager
     let isOperating: Bool
     let onSelectWallet: (CloudBackupWalletItem) -> Void
 
@@ -152,7 +220,7 @@ private struct CloudOnlySectionContent: View {
             }
             .foregroundStyle(.secondary)
             .task {
-                manager.dispatch(.fetchCloudOnly)
+                manager.fetchCloudOnly()
             }
 
         case let .loaded(wallets):
@@ -198,7 +266,7 @@ private struct CloudOnlyWalletRows: View {
 }
 
 private struct CloudOnlyActionDialogs: ViewModifier {
-    let manager: CloudBackupDetailManager
+    let manager: CloudBackupManager
     @Binding var selectedWallet: CloudBackupWalletItem?
     @Binding var walletToDelete: CloudBackupWalletItem?
 
@@ -214,7 +282,7 @@ private struct CloudOnlyActionDialogs: ViewModifier {
             ) {
                 if let item = selectedWallet {
                     Button("Restore to This Device") {
-                        manager.dispatch(.restoreCloudWallet(recordId: item.recordId))
+                        manager.restoreCloudWallet(recordId: item.recordId)
                     }
                     Button("Delete from iCloud", role: .destructive) {
                         walletToDelete = item
@@ -231,7 +299,7 @@ private struct CloudOnlyActionDialogs: ViewModifier {
             ) {
                 if let item = walletToDelete {
                     Button("Delete", role: .destructive) {
-                        manager.dispatch(.deleteCloudWallet(recordId: item.recordId))
+                        manager.deleteCloudWallet(recordId: item.recordId)
                     }
                 }
                 Button("Cancel", role: .cancel) {}

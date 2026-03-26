@@ -264,7 +264,7 @@ struct MainSettingsScreen: View {
                 switch manager.state {
                 case .disabled:
                     SettingsRow(title: "Enable Cloud Backup", symbol: "icloud.and.arrow.up") {
-                        manager.rust.enableCloudBackup()
+                        manager.enableCloudBackup()
                     }
                 case .enabling:
                     HStack {
@@ -274,7 +274,7 @@ struct MainSettingsScreen: View {
                     }
                 case .enabled:
                     HStack {
-                        if manager.rust.isCloudBackupUnverified() {
+                        if manager.isUnverified {
                             Image(systemName: "exclamationmark.icloud")
                                 .foregroundStyle(.orange)
                             Text("Cloud Backup Unverified")
@@ -343,7 +343,7 @@ struct MainSettingsScreen: View {
                     }
 
                     SettingsRow(title: "Retry", symbol: "arrow.clockwise") {
-                        manager.rust.enableCloudBackup()
+                        manager.enableCloudBackup()
                     }
                 }
             }
@@ -352,7 +352,7 @@ struct MainSettingsScreen: View {
                 isPresented: $manager.showExistingBackupWarning
             ) {
                 Button("Create New Backup", role: .destructive) {
-                    manager.rust.enableCloudBackupForceNew()
+                    manager.enableCloudBackupForceNew()
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -363,10 +363,10 @@ struct MainSettingsScreen: View {
                 isPresented: $manager.showPasskeyChoiceDialog
             ) {
                 Button("Use Existing Passkey") {
-                    manager.rust.enableCloudBackup()
+                    manager.enableCloudBackup()
                 }
                 Button("Create New Passkey") {
-                    manager.rust.enableCloudBackupNoDiscovery()
+                    manager.enableCloudBackupNoDiscovery()
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
