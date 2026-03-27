@@ -20,7 +20,6 @@ pub enum AppStateReconcileMessage {
     DefaultRouteChanged(Route, Vec<Route>),
     RouteUpdated(Vec<Route>),
     DatabaseUpdated,
-    CloudBackupVerificationRecommended,
     ColorSchemeChanged(ColorSchemeSelection),
     SelectedNodeChanged(Node),
     SelectedNetworkChanged(Network),

@@ -9,6 +9,7 @@ use super::super::{
     CloudBackupStatus, RustCloudBackupManager,
 };
 use crate::database::Database;
+use crate::database::cloud_backup::CloudUploadKind;
 
 impl RustCloudBackupManager {
     /// List wallet backups in the current namespace and build detail
@@ -64,23 +65,27 @@ impl RustCloudBackupManager {
 /// Remove confirmed pending blobs that now appear in the cloud listing
 pub(crate) fn cleanup_confirmed_pending_blobs(listed_ids: &HashSet<String>) {
     let db = Database::global();
-    let table = &db.cloud_backup_upload_verification;
-    let mut pending = match table.get() {
+    let table = &db.cloud_upload_queue;
+    let mut queue = match table.get() {
         Ok(Some(p)) => p,
         _ => return,
     };
+    let namespace_id = match CLOUD_BACKUP_MANAGER.current_namespace_id() {
+        Ok(namespace_id) => namespace_id,
+        Err(_) => return,
+    };
 
-    let before = pending.blobs.len();
-    pending.cleanup_listed(listed_ids);
+    let before = queue.items.len();
+    queue.cleanup_listed(CloudUploadKind::BackupBlob, &namespace_id, listed_ids);
 
-    if pending.blobs.len() < before {
-        if pending.blobs.is_empty() {
+    if queue.items.len() < before {
+        if queue.items.is_empty() {
             let _ = table.delete();
             CLOUD_BACKUP_MANAGER.send(
                 CloudBackupReconcileMessage::PendingUploadVerificationChanged { pending: false },
             );
         } else {
-            let _ = table.set(&pending);
+            let _ = table.set(&queue);
         }
     }
 }

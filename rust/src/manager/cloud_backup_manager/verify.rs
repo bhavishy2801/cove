@@ -16,9 +16,8 @@ use super::{
     CloudBackupDetailResult, CloudBackupError, CloudBackupStatus, DeepVerificationFailure,
     DeepVerificationResult, RustCloudBackupManager, VerificationFailureKind,
 };
-use crate::app::reconcile::{AppStateReconcileMessage, Updater};
 use crate::database::Database;
-use crate::database::global_config::CloudBackup;
+use crate::database::cloud_backup::{PersistedCloudBackupState, PersistedCloudBackupStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IntegrityDowngrade {
@@ -93,7 +92,6 @@ impl RustCloudBackupManager {
         }
 
         if issues.is_empty() {
-            self.promote_integrity_verified_state();
             info!("Backup integrity check passed");
             None
         } else {
@@ -133,77 +131,58 @@ impl RustCloudBackupManager {
     }
 
     pub(crate) fn persist_verification_result(&self, result: &DeepVerificationResult) {
-        let db = Database::global();
-        let current = db.global_config.cloud_backup();
+        let current = RustCloudBackupManager::load_persisted_state();
+        if matches!(current.status, PersistedCloudBackupStatus::Disabled) {
+            return;
+        }
 
-        let (last_sync, wallet_count, last_verified_at) = match &current {
-            CloudBackup::Enabled { last_sync, wallet_count, last_verified_at }
-            | CloudBackup::Unverified { last_sync, wallet_count, last_verified_at }
-            | CloudBackup::PasskeyMissing { last_sync, wallet_count, last_verified_at } => {
-                (*last_sync, *wallet_count, *last_verified_at)
+        let mut new_state = current.clone();
+        match result {
+            DeepVerificationResult::Verified(_) => {
+                new_state.status = PersistedCloudBackupStatus::Enabled;
+                new_state.last_verified_at =
+                    Some(jiff::Timestamp::now().as_second().try_into().unwrap_or(0));
             }
-            CloudBackup::Disabled => return,
-        };
-
-        let new_state = match result {
-            DeepVerificationResult::Verified(_) => CloudBackup::Enabled {
-                last_sync,
-                wallet_count,
-                last_verified_at: Some(jiff::Timestamp::now().as_second().try_into().unwrap_or(0)),
-            },
             DeepVerificationResult::PasskeyConfirmed(_) => return,
             DeepVerificationResult::PasskeyMissing(_) => {
-                CloudBackup::PasskeyMissing { last_sync, wallet_count, last_verified_at }
+                new_state.status = PersistedCloudBackupStatus::PasskeyMissing;
             }
             DeepVerificationResult::UserCancelled(_) | DeepVerificationResult::Failed(_) => {
-                CloudBackup::Unverified { last_sync, wallet_count, last_verified_at }
+                new_state.status = PersistedCloudBackupStatus::Unverified;
             }
             DeepVerificationResult::NotEnabled => return,
         };
 
-        if current != new_state {
-            if let Err(error) = db.global_config.set_cloud_backup(&new_state) {
-                error!("Failed to persist verification state: {error}");
-                return;
-            }
-
-            let runtime_state = match new_state {
-                CloudBackup::PasskeyMissing { .. } => CloudBackupStatus::PasskeyMissing,
-                CloudBackup::Enabled { .. } | CloudBackup::Unverified { .. } => {
-                    CloudBackupStatus::Enabled
-                }
-                CloudBackup::Disabled => return,
-            };
-            self.send(super::CloudBackupReconcileMessage::StatusChanged(runtime_state));
+        if current != new_state
+            && let Err(error) =
+                self.persist_cloud_backup_state(&new_state, "persist verification state")
+        {
+            error!("Failed to persist verification state: {error}");
         }
     }
 
     pub(crate) fn mark_verification_required_after_wallet_change(&self) {
-        let db = Database::global();
-        let current = db.global_config.cloud_backup();
+        let current = RustCloudBackupManager::load_persisted_state();
 
-        match current {
-            CloudBackup::Enabled { .. } => {
-                let Some(new_state) =
+        match current.status {
+            PersistedCloudBackupStatus::Enabled | PersistedCloudBackupStatus::Unverified => {
+                let Some(mut new_state) =
                     downgrade_cloud_backup_state(&current, IntegrityDowngrade::Unverified)
                 else {
                     return;
                 };
 
-                if let Err(error) = db.global_config.set_cloud_backup(&new_state) {
-                    error!("Failed to mark cloud backup unverified after wallet change: {error}");
-                    return;
-                }
+                new_state.last_verification_requested_at =
+                    Some(jiff::Timestamp::now().as_second().try_into().unwrap_or(0));
 
-                self.send(super::CloudBackupReconcileMessage::StatusChanged(
-                    CloudBackupStatus::Enabled,
-                ));
-                Updater::send_update(AppStateReconcileMessage::CloudBackupVerificationRecommended);
+                if let Err(error) = self.persist_cloud_backup_state(
+                    &new_state,
+                    "mark cloud backup unverified after wallet change",
+                ) {
+                    error!("Failed to mark cloud backup unverified after wallet change: {error}");
+                }
             }
-            CloudBackup::Unverified { .. } => {
-                Updater::send_update(AppStateReconcileMessage::CloudBackupVerificationRecommended);
-            }
-            CloudBackup::PasskeyMissing { .. } | CloudBackup::Disabled => {}
+            PersistedCloudBackupStatus::PasskeyMissing | PersistedCloudBackupStatus::Disabled => {}
         }
     }
 
@@ -280,23 +259,6 @@ impl RustCloudBackupManager {
 }
 
 impl RustCloudBackupManager {
-    fn promote_integrity_verified_state(&self) {
-        let db = Database::global();
-        let current = db.global_config.cloud_backup();
-        let Some(new_state) = promote_cloud_backup_state_after_integrity_pass(&current) else {
-            return;
-        };
-
-        info!("Cloud backup integrity: clearing stale unverified state");
-
-        if let Err(error) = db.global_config.set_cloud_backup(&new_state) {
-            error!("Failed to clear stale backup integrity state: {error}");
-            return;
-        }
-
-        self.send(super::CloudBackupReconcileMessage::StatusChanged(CloudBackupStatus::Enabled));
-    }
-
     fn persist_integrity_downgrade(&self, downgrade: Option<IntegrityDowngrade>) {
         let Some(downgrade) = downgrade else {
             return;
@@ -304,25 +266,16 @@ impl RustCloudBackupManager {
 
         info!("Cloud backup integrity: applying downgrade={downgrade:?}");
 
-        let db = Database::global();
-        let current = db.global_config.cloud_backup();
+        let current = RustCloudBackupManager::load_persisted_state();
         let Some(new_state) = downgrade_cloud_backup_state(&current, downgrade) else {
             return;
         };
 
-        if let Err(error) = db.global_config.set_cloud_backup(&new_state) {
+        if let Err(error) =
+            self.persist_cloud_backup_state(&new_state, "persist backup integrity state")
+        {
             error!("Failed to persist backup integrity state: {error}");
-            return;
-        }
-
-        let runtime_state = match new_state {
-            CloudBackup::PasskeyMissing { .. } => CloudBackupStatus::PasskeyMissing,
-            CloudBackup::Enabled { .. } | CloudBackup::Unverified { .. } => {
-                CloudBackupStatus::Enabled
-            }
-            CloudBackup::Disabled => return,
         };
-        self.send(super::CloudBackupReconcileMessage::StatusChanged(runtime_state));
     }
 }
 
@@ -334,41 +287,20 @@ pub(super) fn load_stored_credential_id(keychain: &Keychain) -> Option<Vec<u8>> 
     })
 }
 
-fn promote_cloud_backup_state_after_integrity_pass(current: &CloudBackup) -> Option<CloudBackup> {
-    match current {
-        CloudBackup::Unverified { last_sync, wallet_count, last_verified_at } => {
-            Some(CloudBackup::Enabled {
-                last_sync: *last_sync,
-                wallet_count: *wallet_count,
-                last_verified_at: *last_verified_at,
-            })
-        }
-        CloudBackup::Enabled { .. }
-        | CloudBackup::PasskeyMissing { .. }
-        | CloudBackup::Disabled => None,
-    }
-}
-
 fn downgrade_cloud_backup_state(
-    current: &CloudBackup,
+    current: &PersistedCloudBackupState,
     downgrade: IntegrityDowngrade,
-) -> Option<CloudBackup> {
-    let (last_sync, wallet_count, last_verified_at) = match current {
-        CloudBackup::Enabled { last_sync, wallet_count, last_verified_at }
-        | CloudBackup::Unverified { last_sync, wallet_count, last_verified_at }
-        | CloudBackup::PasskeyMissing { last_sync, wallet_count, last_verified_at } => {
-            (*last_sync, *wallet_count, *last_verified_at)
-        }
-        CloudBackup::Disabled => return None,
-    };
-
+) -> Option<PersistedCloudBackupState> {
     match downgrade {
-        IntegrityDowngrade::Unverified => match current {
-            CloudBackup::Enabled { .. } => {
-                Some(CloudBackup::Unverified { last_sync, wallet_count, last_verified_at })
+        IntegrityDowngrade::Unverified => match current.status {
+            PersistedCloudBackupStatus::Enabled => Some(PersistedCloudBackupState {
+                status: PersistedCloudBackupStatus::Unverified,
+                ..current.clone()
+            }),
+            PersistedCloudBackupStatus::Unverified => Some(current.clone()),
+            PersistedCloudBackupStatus::PasskeyMissing | PersistedCloudBackupStatus::Disabled => {
+                None
             }
-            CloudBackup::Unverified { .. } | CloudBackup::PasskeyMissing { .. } => None,
-            CloudBackup::Disabled => None,
         },
     }
 }
@@ -379,10 +311,12 @@ mod tests {
 
     #[test]
     fn downgrade_state_marks_enabled_as_unverified() {
-        let current = CloudBackup::Enabled {
+        let current = PersistedCloudBackupState {
+            status: PersistedCloudBackupStatus::Enabled,
             last_sync: Some(5),
             wallet_count: Some(2),
             last_verified_at: Some(21),
+            ..PersistedCloudBackupState::default()
         };
 
         let updated =
@@ -390,69 +324,27 @@ mod tests {
 
         assert_eq!(
             updated,
-            CloudBackup::Unverified {
+            PersistedCloudBackupState {
+                status: PersistedCloudBackupStatus::Unverified,
                 last_sync: Some(5),
                 wallet_count: Some(2),
                 last_verified_at: Some(21),
+                ..PersistedCloudBackupState::default()
             }
         );
     }
 
     #[test]
     fn downgrade_state_keeps_passkey_missing_when_only_unverified_requested() {
-        let current = CloudBackup::PasskeyMissing {
+        let current = PersistedCloudBackupState {
+            status: PersistedCloudBackupStatus::PasskeyMissing,
             last_sync: Some(11),
             wallet_count: Some(4),
             last_verified_at: Some(22),
+            ..PersistedCloudBackupState::default()
         };
 
         let updated = downgrade_cloud_backup_state(&current, IntegrityDowngrade::Unverified);
-
-        assert!(updated.is_none());
-    }
-
-    #[test]
-    fn promote_state_marks_unverified_as_enabled() {
-        let current = CloudBackup::Unverified {
-            last_sync: Some(13),
-            wallet_count: Some(5),
-            last_verified_at: Some(23),
-        };
-
-        let updated = promote_cloud_backup_state_after_integrity_pass(&current).unwrap();
-
-        assert_eq!(
-            updated,
-            CloudBackup::Enabled {
-                last_sync: Some(13),
-                wallet_count: Some(5),
-                last_verified_at: Some(23),
-            }
-        );
-    }
-
-    #[test]
-    fn promote_state_preserves_passkey_missing() {
-        let current = CloudBackup::PasskeyMissing {
-            last_sync: Some(17),
-            wallet_count: Some(6),
-            last_verified_at: Some(24),
-        };
-
-        let updated = promote_cloud_backup_state_after_integrity_pass(&current);
-
-        assert!(updated.is_none());
-    }
-
-    #[test]
-    fn promote_state_keeps_enabled_unchanged() {
-        let current = CloudBackup::Enabled {
-            last_sync: Some(19),
-            wallet_count: Some(7),
-            last_verified_at: Some(25),
-        };
-
-        let updated = promote_cloud_backup_state_after_integrity_pass(&current);
 
         assert!(updated.is_none());
     }

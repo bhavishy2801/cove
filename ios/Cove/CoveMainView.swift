@@ -775,7 +775,7 @@ struct CoveMainView: View {
     }
 
     private func scheduleCloudBackupVerificationPrompt() {
-        guard app.pendingCloudBackupVerificationPrompt else {
+        guard CloudBackupManager.shared.shouldPromptVerification else {
             showCloudBackupVerificationPrompt = false
             return
         }
@@ -789,12 +789,11 @@ struct CoveMainView: View {
     }
 
     private func dismissCloudBackupVerificationPrompt() {
-        app.pendingCloudBackupVerificationPrompt = false
         showCloudBackupVerificationPrompt = false
+        CloudBackupManager.shared.dismissVerificationPrompt()
     }
 
     private func startCloudBackupVerification() {
-        app.pendingCloudBackupVerificationPrompt = false
         showCloudBackupVerificationPrompt = false
         CloudBackupManager.shared.startVerification()
     }
@@ -926,7 +925,7 @@ struct CoveMainView: View {
                     scheduleCloudBackupVerificationPrompt()
                 }
             }
-            .onChange(of: app.pendingCloudBackupVerificationPrompt) { _, shouldPrompt in
+            .onChange(of: CloudBackupManager.shared.shouldPromptVerification) { _, shouldPrompt in
                 if shouldPrompt {
                     scheduleCloudBackupVerificationPrompt()
                 } else {

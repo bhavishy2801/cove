@@ -12,9 +12,7 @@ use tracing::{error, info};
 use self::queue_processor::PendingUploadVerifier;
 use super::{CLOUD_BACKUP_MANAGER, CloudBackupError, Message, RustCloudBackupManager};
 use crate::database::Database;
-use crate::database::cloud_backup_upload_verification::{
-    PendingCloudUploadBlob, PendingCloudUploadVerification,
-};
+use crate::database::cloud_backup::{CloudUploadKind, PendingCloudUploadItem};
 
 pub(crate) use detail::{build_detail_from_wallet_ids, cleanup_confirmed_pending_blobs};
 
@@ -56,26 +54,28 @@ impl RustCloudBackupManager {
         I: IntoIterator<Item = String>,
     {
         let db = Database::global();
-        let table = &db.cloud_backup_upload_verification;
+        let table = &db.cloud_upload_queue;
         let now = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
 
-        let mut pending = match table
+        let mut pending = table
             .get()
-            .map_err_prefix("read pending cloud upload verification", CloudBackupError::Internal)?
-        {
-            Some(existing) if existing.namespace_id == namespace_id => existing,
-            _ => PendingCloudUploadVerification {
-                namespace_id: namespace_id.to_string(),
-                blobs: Vec::new(),
-            },
-        };
+            .map_err_prefix("read pending cloud upload queue", CloudBackupError::Internal)?
+            .unwrap_or_default();
 
-        let mut known_record_ids: HashSet<String> =
-            pending.blobs.iter().map(|blob| blob.record_id.clone()).collect();
+        let mut known_record_ids: HashSet<String> = pending
+            .items
+            .iter()
+            .filter(|item| {
+                item.kind == CloudUploadKind::BackupBlob && item.namespace_id == namespace_id
+            })
+            .map(|item| item.record_id.clone())
+            .collect();
 
         for record_id in record_ids {
             if known_record_ids.insert(record_id.clone()) {
-                pending.blobs.push(PendingCloudUploadBlob {
+                pending.items.push(PendingCloudUploadItem {
+                    kind: CloudUploadKind::BackupBlob,
+                    namespace_id: namespace_id.to_string(),
                     record_id,
                     enqueued_at: now,
                     last_checked_at: None,
@@ -85,14 +85,13 @@ impl RustCloudBackupManager {
             }
         }
 
-        if pending.blobs.is_empty() {
+        if pending.items.is_empty() {
             return Ok(());
         }
 
-        table.set(&pending).map_err_prefix(
-            "persist pending cloud upload verification",
-            CloudBackupError::Internal,
-        )?;
+        table
+            .set(&pending)
+            .map_err_prefix("persist pending cloud upload queue", CloudBackupError::Internal)?;
 
         self.send(Message::PendingUploadVerificationChanged { pending: true });
         self.wake_pending_upload_verifier();
@@ -110,35 +109,33 @@ impl RustCloudBackupManager {
         I: IntoIterator<Item = String>,
     {
         let db = Database::global();
-        let table = &db.cloud_backup_upload_verification;
+        let table = &db.cloud_upload_queue;
         let Some(mut pending) = table
             .get()
-            .map_err_prefix("read pending cloud upload verification", CloudBackupError::Internal)?
+            .map_err_prefix("read pending cloud upload queue", CloudBackupError::Internal)?
         else {
             return Ok(());
         };
 
-        if pending.namespace_id != namespace_id {
-            return Ok(());
-        }
-
         let record_ids: HashSet<String> = record_ids.into_iter().collect();
-        pending.blobs.retain(|blob| !record_ids.contains(&blob.record_id));
+        pending.items.retain(|item| {
+            !(item.kind == CloudUploadKind::BackupBlob
+                && item.namespace_id == namespace_id
+                && record_ids.contains(&item.record_id))
+        });
 
-        if pending.blobs.is_empty() {
-            table.delete().map_err_prefix(
-                "clear pending cloud upload verification",
-                CloudBackupError::Internal,
-            )?;
+        if pending.items.is_empty() {
+            table
+                .delete()
+                .map_err_prefix("clear pending cloud upload queue", CloudBackupError::Internal)?;
             self.send(Message::PendingUploadVerificationChanged { pending: false });
             self.wake_pending_upload_verifier();
             return Ok(());
         }
 
-        table.set(&pending).map_err_prefix(
-            "persist pending cloud upload verification",
-            CloudBackupError::Internal,
-        )?;
+        table
+            .set(&pending)
+            .map_err_prefix("persist pending cloud upload queue", CloudBackupError::Internal)?;
         self.send(Message::PendingUploadVerificationChanged { pending: true });
         self.wake_pending_upload_verifier();
 

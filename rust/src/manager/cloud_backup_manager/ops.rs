@@ -22,7 +22,7 @@ use super::{
     CloudBackupWalletStatus, RustCloudBackupManager,
 };
 use crate::database::Database;
-use crate::database::global_config::CloudBackup;
+use crate::database::cloud_backup::{PersistedCloudBackupState, PersistedCloudBackupStatus};
 use crate::wallet::metadata::WalletMetadata;
 
 impl RustCloudBackupManager {
@@ -161,8 +161,13 @@ impl RustCloudBackupManager {
             cloud.list_wallet_backups(namespace).map_err_str(CloudBackupError::Cloud)?;
         let wallet_count = wallet_record_ids.len() as u32;
         let db = Database::global();
-        let current = db.global_config.cloud_backup();
-        let _ = db.global_config.set_cloud_backup(&current.with_wallet_count(Some(wallet_count)));
+        if let Ok(mut current) = db.cloud_backup_state.get() {
+            current.wallet_count = Some(wallet_count);
+            let _ = self.persist_cloud_backup_state(
+                &current,
+                "persist cloud backup state after deleting cloud wallet",
+            );
+        }
 
         info!("Deleted cloud wallet {record_id}");
         Ok(())
@@ -435,14 +440,15 @@ impl RustCloudBackupManager {
 
         let wallet_count = report.wallets_restored;
         let now = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
-        let db = Database::global();
-        db.global_config
-            .set_cloud_backup(&CloudBackup::Enabled {
-                last_sync: Some(now),
-                wallet_count: Some(wallet_count),
-                last_verified_at: None,
-            })
-            .map_err_prefix("persist cloud backup state", CloudBackupError::Internal)?;
+        let state = PersistedCloudBackupState {
+            status: PersistedCloudBackupStatus::Enabled,
+            last_sync: Some(now),
+            wallet_count: Some(wallet_count),
+            last_verified_at: None,
+            last_verification_requested_at: None,
+            last_verification_dismissed_at: None,
+        };
+        self.persist_cloud_backup_state(&state, "persist restored cloud backup state")?;
 
         self.send(Message::RestoreComplete(report));
         self.send(Message::StatusChanged(CloudBackupStatus::Enabled));

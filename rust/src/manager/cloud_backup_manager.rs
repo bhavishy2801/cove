@@ -20,7 +20,7 @@ use cove_types::network::Network;
 
 use crate::backup::model::DescriptorPair as LocalDescriptorPair;
 use crate::database::Database;
-use crate::database::global_config::CloudBackup;
+use crate::database::cloud_backup::{PersistedCloudBackupState, PersistedCloudBackupStatus};
 use crate::wallet::metadata::{WalletMode as LocalWalletMode, WalletType};
 
 use self::wallets::{all_local_wallets, count_all_wallets};
@@ -50,6 +50,7 @@ pub enum CloudBackupStatus {
 pub enum CloudBackupReconcileMessage {
     Updated,
     StatusChanged(CloudBackupStatus),
+    VerificationPromptChanged { pending: bool },
     ProgressUpdated { completed: u32, total: u32 },
     RestoreProgressUpdated(CloudBackupRestoreProgress),
     EnableComplete,
@@ -174,6 +175,7 @@ pub struct CloudBackupState {
     pub restore_report: Option<CloudBackupRestoreReport>,
     pub sync_error: Option<String>,
     pub has_pending_upload_verification: bool,
+    pub should_prompt_verification: bool,
     pub is_unverified: bool,
     pub is_configured: bool,
     pub last_verified_at: Option<u64>,
@@ -194,6 +196,7 @@ impl Default for CloudBackupState {
             restore_report: None,
             sync_error: None,
             has_pending_upload_verification: false,
+            should_prompt_verification: false,
             is_unverified: false,
             is_configured: false,
             last_verified_at: None,
@@ -246,6 +249,23 @@ pub struct RustCloudBackupManager {
 }
 
 impl RustCloudBackupManager {
+    fn load_persisted_state() -> PersistedCloudBackupState {
+        Database::global().cloud_backup_state.get().unwrap_or_else(|error| {
+            error!("Failed to load cloud backup state: {error}");
+            PersistedCloudBackupState::default()
+        })
+    }
+
+    pub(crate) fn runtime_status_for(state: &PersistedCloudBackupState) -> CloudBackupStatus {
+        match state.status {
+            PersistedCloudBackupStatus::Disabled => CloudBackupStatus::Disabled,
+            PersistedCloudBackupStatus::Enabled | PersistedCloudBackupStatus::Unverified => {
+                CloudBackupStatus::Enabled
+            }
+            PersistedCloudBackupStatus::PasskeyMissing => CloudBackupStatus::PasskeyMissing,
+        }
+    }
+
     fn init() -> Arc<Self> {
         let (sender, receiver) = flume::bounded(1000);
 
@@ -260,10 +280,11 @@ impl RustCloudBackupManager {
     }
 
     fn refresh_state_flags(state: &mut CloudBackupState) {
-        let db_state = Database::global().global_config.cloud_backup();
-        state.is_unverified = matches!(db_state, CloudBackup::Unverified { .. });
-        state.is_configured = !matches!(db_state, CloudBackup::Disabled);
-        state.last_verified_at = db_state.last_verified_at();
+        let db_state = Self::load_persisted_state();
+        state.is_unverified = db_state.is_unverified();
+        state.is_configured = db_state.is_configured();
+        state.last_verified_at = db_state.last_verified_at;
+        state.should_prompt_verification = db_state.should_prompt_verification();
     }
 
     fn apply_message_to_state(&self, message: &Message) {
@@ -282,6 +303,9 @@ impl RustCloudBackupManager {
                     state.progress = None;
                     state.restore_progress = None;
                 }
+            }
+            Message::VerificationPromptChanged { pending } => {
+                state.should_prompt_verification = *pending;
             }
             Message::ProgressUpdated { completed, total } => {
                 state.progress = Some(CloudBackupProgress { completed: *completed, total: *total });
@@ -324,6 +348,36 @@ impl RustCloudBackupManager {
         }
 
         self.send(Message::Updated);
+    }
+
+    pub(crate) fn persist_cloud_backup_state(
+        &self,
+        state: &PersistedCloudBackupState,
+        context: &str,
+    ) -> Result<(), CloudBackupError> {
+        Database::global()
+            .cloud_backup_state
+            .set(state)
+            .map_err(|error| CloudBackupError::Internal(format!("{context}: {error}")))?;
+
+        self.send(Message::StatusChanged(Self::runtime_status_for(state)));
+        self.send(Message::VerificationPromptChanged {
+            pending: state.should_prompt_verification(),
+        });
+
+        Ok(())
+    }
+
+    pub(crate) fn dismiss_verification_prompt_impl(&self) -> Result<(), CloudBackupError> {
+        let mut state = Self::load_persisted_state();
+        if state.last_verification_requested_at.is_none() {
+            return Ok(());
+        }
+
+        state.last_verification_dismissed_at =
+            Some(jiff::Timestamp::now().as_second().try_into().unwrap_or(0));
+
+        self.persist_cloud_backup_state(&state, "persist cloud backup prompt dismissal")
     }
 
     fn current_namespace_id(&self) -> Result<String, CloudBackupError> {
@@ -394,13 +448,13 @@ impl RustCloudBackupManager {
     /// Number of wallets in the cloud backup
     pub fn backup_wallet_count(&self) -> Option<u32> {
         let db = Database::global();
-        let current = db.global_config.cloud_backup();
+        let current = Self::load_persisted_state();
 
-        match current.wallet_count() {
+        match current.wallet_count {
             Some(count) => Some(count),
-            None if !matches!(&current, CloudBackup::Disabled) => {
+            None if current.is_configured() => {
                 let count = count_all_wallets(&db);
-                let _ = db.global_config.set_cloud_backup(&current.with_wallet_count(Some(count)));
+                let _ = db.cloud_backup_state.set(&current.with_wallet_count(Some(count)));
                 Some(count)
             }
             None => None,
@@ -412,17 +466,11 @@ impl RustCloudBackupManager {
     /// Called after bootstrap completes so the UI reflects the correct state
     /// even before the reconciler has delivered its first message
     pub fn sync_persisted_state(&self) {
-        let db_state = Database::global().global_config.cloud_backup();
+        let db_state = Self::load_persisted_state();
         let mut state = self.state.write();
 
         if matches!(state.status, CloudBackupStatus::Disabled) {
-            let new_status = match db_state {
-                CloudBackup::Enabled { .. } | CloudBackup::Unverified { .. } => {
-                    CloudBackupStatus::Enabled
-                }
-                CloudBackup::PasskeyMissing { .. } => CloudBackupStatus::PasskeyMissing,
-                CloudBackup::Disabled => CloudBackupStatus::Disabled,
-            };
+            let new_status = Self::runtime_status_for(&db_state);
 
             if state.status != new_status {
                 state.status = new_status.clone();
@@ -435,35 +483,26 @@ impl RustCloudBackupManager {
 
     /// Check if cloud backup is enabled, used as nav guard
     pub fn is_cloud_backup_enabled(&self) -> bool {
-        let db = Database::global();
-        matches!(
-            db.global_config.cloud_backup(),
-            CloudBackup::Enabled { .. }
-                | CloudBackup::Unverified { .. }
-                | CloudBackup::PasskeyMissing { .. }
-        )
+        Self::load_persisted_state().is_configured()
     }
 
     /// Whether the persisted cloud backup state is unverified
     pub fn is_cloud_backup_unverified(&self) -> bool {
-        matches!(Database::global().global_config.cloud_backup(), CloudBackup::Unverified { .. })
+        Self::load_persisted_state().is_unverified()
     }
 
     /// Whether the persisted cloud backup passkey is missing
     pub fn is_cloud_backup_passkey_missing(&self) -> bool {
-        matches!(
-            Database::global().global_config.cloud_backup(),
-            CloudBackup::PasskeyMissing { .. }
-        )
+        Self::load_persisted_state().is_passkey_missing()
     }
 
     pub fn has_pending_cloud_upload_verification(&self) -> bool {
         Database::global()
-            .cloud_backup_upload_verification
+            .cloud_upload_queue
             .get()
             .ok()
             .flatten()
-            .is_some_and(|pending| pending.has_unconfirmed())
+            .is_some_and(|queue| queue.has_unconfirmed())
     }
 
     pub fn resume_pending_cloud_upload_verification(&self) {
@@ -485,8 +524,8 @@ impl RustCloudBackupManager {
         cove_cspp::reset_master_key_cache();
 
         let db = Database::global();
-        let _ = db.global_config.set_cloud_backup(&CloudBackup::Disabled);
-        let _ = db.cloud_backup_upload_verification.delete();
+        let _ = db.cloud_backup_state.delete();
+        let _ = db.cloud_upload_queue.delete();
 
         self.update_state(|state| {
             *state = CloudBackupState::default();

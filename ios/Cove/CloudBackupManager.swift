@@ -61,6 +61,10 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
         currentState.hasPendingUploadVerification
     }
 
+    var shouldPromptVerification: Bool {
+        currentState.shouldPromptVerification
+    }
+
     var isUnverified: Bool {
         currentState.isUnverified
     }
@@ -123,6 +127,10 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
         rustBridge.async { self.rust.startVerificationDiscoverable() }
     }
 
+    func dismissVerificationPrompt() {
+        rustBridge.async { self.rust.dismissVerificationPrompt() }
+    }
+
     func recreateManifest() {
         rustBridge.async { self.rust.recreateManifest() }
     }
@@ -167,6 +175,7 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
         switch message {
         case .updated,
              .statusChanged,
+             .verificationPromptChanged,
              .progressUpdated,
              .restoreProgressUpdated,
              .enableComplete,

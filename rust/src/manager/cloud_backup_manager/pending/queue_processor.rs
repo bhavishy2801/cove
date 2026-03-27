@@ -3,8 +3,8 @@ use tracing::{error, info, warn};
 
 use super::super::{Message, RustCloudBackupManager};
 use crate::database::Database;
-use crate::database::cloud_backup_upload_verification::{
-    CloudBackupUploadVerificationTable, PendingCloudUploadBlob, PendingCloudUploadVerification,
+use crate::database::cloud_backup::{
+    CloudUploadKind, CloudUploadQueueTable, PendingCloudUploadItem, PendingCloudUploadQueue,
 };
 
 enum BlobCheckResult {
@@ -18,39 +18,39 @@ pub(super) struct PendingUploadVerifier<'a>(pub(super) &'a RustCloudBackupManage
 impl PendingUploadVerifier<'_> {
     pub(super) fn run_once(&self) -> bool {
         let db = Database::global();
-        let table = &db.cloud_backup_upload_verification;
-        let pending = match table.get() {
-            Ok(pending) => pending,
+        let table = &db.cloud_upload_queue;
+        let queue = match table.get() {
+            Ok(queue) => queue,
             Err(error) => {
                 error!("Pending upload verification: failed to read queue: {error}");
                 return true;
             }
         };
-        let Some(mut pending) = pending else {
+        let Some(mut queue) = queue else {
             self.send_pending_state(false);
             return false;
         };
 
-        if let Some(should_continue) = self.handle_terminal_state(table, &pending) {
+        if let Some(should_continue) = self.handle_terminal_state(table, &queue) {
             return should_continue;
         }
 
-        self.verify_blobs(&mut pending);
+        self.verify_blobs(&mut queue);
 
-        if let Err(error) = table.set(&pending) {
+        if let Err(error) = table.set(&queue) {
             error!("Pending upload verification: failed to persist queue: {error}");
             return true;
         }
 
-        self.finish_pass(&pending)
+        self.finish_pass(&queue)
     }
 
     fn handle_terminal_state(
         &self,
-        table: &CloudBackupUploadVerificationTable,
-        pending: &PendingCloudUploadVerification,
+        table: &CloudUploadQueueTable,
+        queue: &PendingCloudUploadQueue,
     ) -> Option<bool> {
-        if pending.blobs.is_empty() {
+        if queue.items.is_empty() {
             if let Err(error) = table.delete() {
                 error!("Pending upload verification: failed to delete empty queue: {error}");
                 return Some(true);
@@ -60,7 +60,7 @@ impl PendingUploadVerifier<'_> {
             return Some(false);
         }
 
-        if !pending.has_unconfirmed() {
+        if !queue.has_unconfirmed() {
             self.send_pending_state(false);
             return Some(false);
         }
@@ -68,19 +68,17 @@ impl PendingUploadVerifier<'_> {
         None
     }
 
-    fn verify_blobs(&self, pending: &mut PendingCloudUploadVerification) {
+    fn verify_blobs(&self, queue: &mut PendingCloudUploadQueue) {
         let cloud = CloudStorage::global();
         let checked_at: u64 = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
-        let namespace_id = pending.namespace_id.clone();
-
-        for blob in &mut pending.blobs {
-            if blob.confirmed_at.is_some() {
+        for item in &mut queue.items {
+            if item.kind != CloudUploadKind::BackupBlob || item.confirmed_at.is_some() {
                 continue;
             }
 
-            let result = self.check_blob(cloud, &namespace_id, &blob.record_id);
-            Self::apply_blob_result(blob, checked_at, &result);
-            self.log_blob_result(blob, checked_at, &result);
+            let result = self.check_blob(cloud, &item.namespace_id, &item.record_id);
+            Self::apply_blob_result(item, checked_at, &result);
+            self.log_blob_result(item, checked_at, &result);
         }
     }
 
@@ -98,55 +96,54 @@ impl PendingUploadVerifier<'_> {
     }
 
     fn apply_blob_result(
-        blob: &mut PendingCloudUploadBlob,
+        item: &mut PendingCloudUploadItem,
         checked_at: u64,
         result: &BlobCheckResult,
     ) {
         match result {
             BlobCheckResult::Confirmed => {
-                blob.confirmed_at = Some(checked_at);
+                item.confirmed_at = Some(checked_at);
             }
             BlobCheckResult::NotYetUploaded | BlobCheckResult::Failed(_) => {
-                blob.last_checked_at = Some(checked_at);
-                blob.attempt_count += 1;
+                item.last_checked_at = Some(checked_at);
+                item.attempt_count += 1;
             }
         }
     }
 
     fn log_blob_result(
         &self,
-        blob: &PendingCloudUploadBlob,
+        item: &PendingCloudUploadItem,
         checked_at: u64,
         result: &BlobCheckResult,
     ) {
         match result {
             BlobCheckResult::Confirmed => {
-                let elapsed_secs = checked_at.saturating_sub(blob.enqueued_at);
+                let elapsed_secs = checked_at.saturating_sub(item.enqueued_at);
                 info!(
                     "Pending upload verification: confirmed record_id={} elapsed={elapsed_secs}s attempts={}",
-                    blob.record_id, blob.attempt_count
+                    item.record_id, item.attempt_count
                 );
             }
             BlobCheckResult::NotYetUploaded => {
                 info!(
                     "Pending upload verification: not yet uploaded record_id={} attempts={}",
-                    blob.record_id, blob.attempt_count
+                    item.record_id, item.attempt_count
                 );
             }
             BlobCheckResult::Failed(error) => {
                 warn!(
                     "Pending upload verification: check failed record_id={} error={error} attempts={}",
-                    blob.record_id, blob.attempt_count
+                    item.record_id, item.attempt_count
                 );
             }
         }
     }
 
-    fn finish_pass(&self, pending: &PendingCloudUploadVerification) -> bool {
-        let has_unconfirmed = pending.has_unconfirmed();
+    fn finish_pass(&self, queue: &PendingCloudUploadQueue) -> bool {
+        let has_unconfirmed = queue.has_unconfirmed();
         if has_unconfirmed {
-            let unconfirmed =
-                pending.blobs.iter().filter(|blob| blob.confirmed_at.is_none()).count();
+            let unconfirmed = queue.items.iter().filter(|item| item.confirmed_at.is_none()).count();
             self.send_pending_state(true);
             info!("Pending upload verification: still pending count={unconfirmed}");
         } else {
@@ -168,7 +165,9 @@ mod tests {
 
     #[test]
     fn apply_blob_result_confirms_blob() {
-        let mut blob = PendingCloudUploadBlob {
+        let mut blob = PendingCloudUploadItem {
+            kind: CloudUploadKind::BackupBlob,
+            namespace_id: "ns-1".into(),
             record_id: "wallet-a".into(),
             enqueued_at: 10,
             last_checked_at: None,
@@ -185,7 +184,9 @@ mod tests {
 
     #[test]
     fn apply_blob_result_tracks_pending_blob() {
-        let mut blob = PendingCloudUploadBlob {
+        let mut blob = PendingCloudUploadItem {
+            kind: CloudUploadKind::BackupBlob,
+            namespace_id: "ns-1".into(),
             record_id: "wallet-a".into(),
             enqueued_at: 10,
             last_checked_at: None,
@@ -202,7 +203,9 @@ mod tests {
 
     #[test]
     fn apply_blob_result_tracks_failed_blob() {
-        let mut blob = PendingCloudUploadBlob {
+        let mut blob = PendingCloudUploadItem {
+            kind: CloudUploadKind::BackupBlob,
+            namespace_id: "ns-1".into(),
             record_id: "wallet-a".into(),
             enqueued_at: 10,
             last_checked_at: None,

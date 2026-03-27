@@ -6,8 +6,9 @@ use super::{
     CloudBackupDetail, CloudBackupWalletItem, CloudBackupWalletStatus, cspp_master_key_record_id,
 };
 use crate::database::Database;
-use crate::database::cloud_backup_upload_verification::PendingCloudUploadBlob;
-use crate::database::global_config::CloudBackup;
+use crate::database::cloud_backup::{
+    CloudUploadKind, PendingCloudUploadItem, PersistedCloudBackupStatus,
+};
 use crate::manager::cloud_backup_manager::wallets::all_local_wallets;
 use crate::wallet::metadata::WalletMetadata;
 
@@ -21,12 +22,15 @@ impl CloudWalletInventory {
     pub(super) fn load(wallet_record_ids: &[String]) -> Self {
         let db = Database::global();
         let local_wallets = all_local_wallets(&db);
-        let last_sync = match db.global_config.cloud_backup() {
-            CloudBackup::Enabled { last_sync, .. }
-            | CloudBackup::Unverified { last_sync, .. }
-            | CloudBackup::PasskeyMissing { last_sync, .. } => last_sync,
-            CloudBackup::Disabled => None,
-        };
+        let last_sync = db
+            .cloud_backup_state
+            .get()
+            .ok()
+            .and_then(|state| {
+                (!matches!(state.status, PersistedCloudBackupStatus::Disabled))
+                    .then_some(state.last_sync)
+            })
+            .flatten();
         let cloud_wallet_record_ids = merged_cloud_wallet_record_ids(&db, wallet_record_ids);
 
         Self::new(last_sync, local_wallets, cloud_wallet_record_ids)
@@ -94,8 +98,8 @@ pub(super) fn merged_cloud_wallet_record_ids(
 ) -> HashSet<String> {
     let mut cloud_wallet_record_ids: HashSet<_> = wallet_record_ids.iter().cloned().collect();
 
-    if let Ok(Some(pending)) = db.cloud_backup_upload_verification.get() {
-        merge_pending_wallet_record_ids(&mut cloud_wallet_record_ids, &pending.blobs);
+    if let Ok(Some(queue)) = db.cloud_upload_queue.get() {
+        merge_pending_wallet_record_ids(&mut cloud_wallet_record_ids, &queue.items);
     }
 
     cloud_wallet_record_ids
@@ -103,12 +107,12 @@ pub(super) fn merged_cloud_wallet_record_ids(
 
 fn merge_pending_wallet_record_ids(
     cloud_wallet_record_ids: &mut HashSet<String>,
-    pending_blobs: &[PendingCloudUploadBlob],
+    pending_items: &[PendingCloudUploadItem],
 ) {
     let master_key_id = cspp_master_key_record_id();
-    for blob in pending_blobs {
-        if blob.record_id != master_key_id {
-            cloud_wallet_record_ids.insert(blob.record_id.clone());
+    for item in pending_items {
+        if item.kind == CloudUploadKind::BackupBlob && item.record_id != master_key_id {
+            cloud_wallet_record_ids.insert(item.record_id.clone());
         }
     }
 }
@@ -136,14 +140,18 @@ mod tests {
     fn merge_pending_wallet_record_ids_skips_master_key() {
         let mut cloud_wallet_record_ids = HashSet::from(["wallet-a".to_string()]);
         let pending_blobs = vec![
-            PendingCloudUploadBlob {
+            PendingCloudUploadItem {
+                kind: CloudUploadKind::BackupBlob,
+                namespace_id: "ns-1".into(),
                 record_id: cspp_master_key_record_id(),
                 enqueued_at: 0,
                 last_checked_at: None,
                 attempt_count: 0,
                 confirmed_at: None,
             },
-            PendingCloudUploadBlob {
+            PendingCloudUploadItem {
+                kind: CloudUploadKind::BackupBlob,
+                namespace_id: "ns-1".into(),
                 record_id: "wallet-b".to_string(),
                 enqueued_at: 0,
                 last_checked_at: None,

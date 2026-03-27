@@ -24,7 +24,7 @@ use super::{
     RustCloudBackupManager,
 };
 use crate::database::Database;
-use crate::database::global_config::CloudBackup;
+use crate::database::cloud_backup::{PersistedCloudBackupState, PersistedCloudBackupStatus};
 use crate::wallet::metadata::{WalletMetadata, WalletType};
 
 pub(super) struct UnpersistedPrfKey {
@@ -78,12 +78,8 @@ impl RustCloudBackupManager {
         let db = Database::global();
         self.enqueue_pending_uploads(&namespace, uploaded_record_ids)?;
 
-        let previous_count = match db.global_config.cloud_backup() {
-            CloudBackup::Enabled { wallet_count: Some(count), .. }
-            | CloudBackup::Unverified { wallet_count: Some(count), .. }
-            | CloudBackup::PasskeyMissing { wallet_count: Some(count), .. } => count,
-            _ => 0,
-        };
+        let previous_count =
+            db.cloud_backup_state.get().ok().and_then(|state| state.wallet_count).unwrap_or(0);
         let wallet_count = previous_count + wallets.len() as u32;
         persist_enabled_cloud_backup_state(&db, wallet_count)?;
 
@@ -323,7 +319,7 @@ pub(super) fn persist_enabled_cloud_backup_state(
     persist_enabled_cloud_backup_state_with_last_verified_at(
         db,
         wallet_count,
-        db.global_config.cloud_backup().last_verified_at(),
+        db.cloud_backup_state.get().ok().and_then(|state| state.last_verified_at),
     )
 }
 
@@ -331,7 +327,17 @@ pub(super) fn persist_enabled_cloud_backup_state_reset_verification(
     db: &Database,
     wallet_count: u32,
 ) -> Result<(), CloudBackupError> {
-    persist_enabled_cloud_backup_state_with_last_verified_at(db, wallet_count, None)
+    let now = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
+    db.cloud_backup_state
+        .set(&PersistedCloudBackupState {
+            status: PersistedCloudBackupStatus::Enabled,
+            last_sync: Some(now),
+            wallet_count: Some(wallet_count),
+            last_verified_at: None,
+            last_verification_requested_at: None,
+            last_verification_dismissed_at: None,
+        })
+        .map_err_prefix("persist cloud backup state", CloudBackupError::Internal)
 }
 
 fn persist_enabled_cloud_backup_state_with_last_verified_at(
@@ -340,11 +346,21 @@ fn persist_enabled_cloud_backup_state_with_last_verified_at(
     last_verified_at: Option<u64>,
 ) -> Result<(), CloudBackupError> {
     let now = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
-    db.global_config
-        .set_cloud_backup(&CloudBackup::Enabled {
+    let current = db
+        .cloud_backup_state
+        .get()
+        .map_err_prefix("read cloud backup state", CloudBackupError::Internal)?;
+    db.cloud_backup_state
+        .set(&PersistedCloudBackupState {
+            status: match current.status {
+                PersistedCloudBackupStatus::Disabled => PersistedCloudBackupStatus::Enabled,
+                status => status,
+            },
             last_sync: Some(now),
             wallet_count: Some(wallet_count),
             last_verified_at,
+            last_verification_requested_at: current.last_verification_requested_at,
+            last_verification_dismissed_at: current.last_verification_dismissed_at,
         })
         .map_err_prefix("persist cloud backup state", CloudBackupError::Internal)
 }

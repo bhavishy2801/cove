@@ -54,11 +54,23 @@ pub enum CloudOnlyOperation {
 #[uniffi::export]
 impl RustCloudBackupManager {
     pub fn start_verification(&self) {
+        if let Err(error) = self.dismiss_verification_prompt_impl() {
+            error!("Failed to dismiss verification prompt before verification: {error}");
+        }
         CLOUD_BACKUP_MANAGER.clone().spawn_verification(false);
     }
 
     pub fn start_verification_discoverable(&self) {
+        if let Err(error) = self.dismiss_verification_prompt_impl() {
+            error!("Failed to dismiss verification prompt before verification: {error}");
+        }
         CLOUD_BACKUP_MANAGER.clone().spawn_verification(true);
+    }
+
+    pub fn dismiss_verification_prompt(&self) {
+        if let Err(error) = self.dismiss_verification_prompt_impl() {
+            error!("Failed to dismiss verification prompt: {error}");
+        }
     }
 
     pub fn recreate_manifest(&self) {
