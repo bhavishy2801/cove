@@ -6,11 +6,13 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct TermsAndConditionsView: View {
     let onAgree: () -> Void
 
     @State private var checks: [Bool] = Array(repeating: false, count: 5)
+    @Environment(\.openURL) private var openURL
 
     private var allChecked: Bool {
         checks.allSatisfy(\.self)
@@ -64,12 +66,10 @@ struct TermsAndConditionsView: View {
                     Text("I understand that if I lose access to my wallet, Cove cannot recover my funds or credentials.")
                 }
 
-                TermsCheckboxCard(isOn: $checks[4], cardPadding: cardPadding, allowsCardToggle: false) {
-                    Text(
-                        .init(
-                            "I have read and agree to Cove’s **[Privacy Policy](https://covebitcoinwallet.com/privacy)** and **[Terms & Conditions](https://covebitcoinwallet.com/terms)** as a condition of use."
-                        )
-                    )
+                TermsCheckboxCard(isOn: $checks[4], cardPadding: cardPadding) {
+                    TermsAgreementText {
+                        openURL($0)
+                    }
                 }
             }
 
@@ -91,6 +91,121 @@ struct TermsAndConditionsView: View {
             }
             .buttonStyle(OnboardingPrimaryButtonStyle())
             .disabled(!allChecked)
+        }
+    }
+}
+
+private struct TermsAgreementText: UIViewRepresentable {
+    let onOpenURL: (URL) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onOpenURL: onOpenURL)
+    }
+
+    func makeUIView(context: Context) -> LinkOnlyTextView {
+        let textView = LinkOnlyTextView()
+        textView.delegate = context.coordinator
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.adjustsFontForContentSizeCategory = true
+        textView.showsVerticalScrollIndicator = false
+        textView.showsHorizontalScrollIndicator = false
+        textView.linkTextAttributes = Self.linkAttributes
+        return textView
+    }
+
+    func updateUIView(_ uiView: LinkOnlyTextView, context _: Context) {
+        uiView.attributedText = Self.attributedText
+        uiView.linkTextAttributes = Self.linkAttributes
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: LinkOnlyTextView, context _: Context) -> CGSize? {
+        guard let width = proposal.width else { return nil }
+        let fittingSize = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: ceil(fittingSize.height))
+    }
+
+    private static let baseFont = UIFont.preferredFont(forTextStyle: .footnote)
+    private static let boldFont = UIFontMetrics(forTextStyle: .footnote).scaledFont(
+        for: .systemFont(ofSize: baseFont.pointSize, weight: .bold)
+    )
+    private static let textColor = UIColor.white.withAlphaComponent(0.82)
+    private static let linkColor = UIColor(Color.btnGradientLight)
+    private static let paragraphStyle: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byWordWrapping
+        return style
+    }()
+
+    private static let bodyAttributes: [NSAttributedString.Key: Any] = [
+        .font: baseFont,
+        .foregroundColor: textColor,
+        .paragraphStyle: paragraphStyle,
+    ]
+    private static let linkAttributes: [NSAttributedString.Key: Any] = [
+        .font: boldFont,
+        .foregroundColor: linkColor,
+        .underlineStyle: NSUnderlineStyle.single.rawValue,
+    ]
+    private static let attributedText: NSAttributedString = {
+        let text = NSMutableAttributedString(
+            string: "I have read and agree to Cove’s ",
+            attributes: bodyAttributes
+        )
+
+        text.append(
+            NSAttributedString(
+                string: "Privacy Policy",
+                attributes: bodyAttributes.merging(
+                    [
+                        .font: boldFont,
+                        .foregroundColor: linkColor,
+                        .underlineStyle: NSUnderlineStyle.single.rawValue,
+                        .link: URL(string: "https://covebitcoinwallet.com/privacy")!,
+                    ],
+                    uniquingKeysWith: { _, new in new }
+                )
+            )
+        )
+        text.append(NSAttributedString(string: " and ", attributes: bodyAttributes))
+        text.append(
+            NSAttributedString(
+                string: "Terms & Conditions",
+                attributes: bodyAttributes.merging(
+                    [
+                        .font: boldFont,
+                        .foregroundColor: linkColor,
+                        .underlineStyle: NSUnderlineStyle.single.rawValue,
+                        .link: URL(string: "https://covebitcoinwallet.com/terms")!,
+                    ],
+                    uniquingKeysWith: { _, new in new }
+                )
+            )
+        )
+        text.append(NSAttributedString(string: " as a condition of use.", attributes: bodyAttributes))
+
+        return text
+    }()
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        private let onOpenURL: (URL) -> Void
+
+        init(onOpenURL: @escaping (URL) -> Void) {
+            self.onOpenURL = onOpenURL
+        }
+
+        func textView(
+            _: UITextView,
+            shouldInteractWith url: URL,
+            in _: NSRange,
+            interaction _: UITextItemInteraction
+        ) -> Bool {
+            onOpenURL(url)
+            return false
         }
     }
 }
@@ -137,6 +252,30 @@ private struct TermsCheckboxCard<Content: View>: View {
             guard allowsCardToggle else { return }
             isOn.toggle()
         }
+    }
+}
+
+private final class LinkOnlyTextView: UITextView {
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        guard super.point(inside: point, with: event), attributedText.length > 0 else { return false }
+
+        let textContainerPoint = CGPoint(
+            x: point.x - textContainerInset.left,
+            y: point.y - textContainerInset.top
+        )
+
+        let glyphIndex = layoutManager.glyphIndex(for: textContainerPoint, in: textContainer)
+        let glyphRect = layoutManager.boundingRect(
+            forGlyphRange: NSRange(location: glyphIndex, length: 1),
+            in: textContainer
+        )
+
+        guard glyphRect.contains(textContainerPoint) else { return false }
+
+        let characterIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+        guard characterIndex < attributedText.length else { return false }
+
+        return attributedText.attribute(.link, at: characterIndex, effectiveRange: nil) != nil
     }
 }
 
