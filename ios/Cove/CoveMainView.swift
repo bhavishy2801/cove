@@ -20,7 +20,6 @@ struct CoveMainView: View {
     @State var coverClearTask: Task<Void, Never>?
     @State private var showMissingPasskeyAlert = false
     @State private var pendingMissingPasskeyAlert = false
-    @State private var backgroundEnteredAt: Date?
 
     @ViewBuilder
     private func alertMessage(alert: TaggedItem<AppAlertState>) -> some View {
@@ -259,6 +258,19 @@ struct CoveMainView: View {
     private var isCloudBackupPasskeyMissing: Bool {
         if case .passkeyMissing = CloudBackupManager.shared.status { return true }
         return false
+    }
+
+    private var isRepairingCloudBackupPasskey: Bool {
+        if case .recovering(.repairPasskey) = CloudBackupManager.shared.recovery { return true }
+        return false
+    }
+
+    private var isViewingCloudBackup: Bool {
+        app.currentRoute.isEqual(routeToCheck: .settings(.cloudBackup))
+    }
+
+    private var shouldSuppressMissingPasskeyAlert: Bool {
+        isRepairingCloudBackupPasskey || isViewingCloudBackup
     }
 
     var navBarColor: Color {
@@ -667,10 +679,6 @@ struct CoveMainView: View {
             }
         }
 
-        if newPhase == .background {
-            backgroundEnteredAt = Date.now
-        }
-
         // close all open sheets when going into the background
         if auth.isAuthEnabled, newPhase == .background {
             Log.debug("[scene] app going into background")
@@ -732,11 +740,9 @@ struct CoveMainView: View {
             return
         }
 
-        // only show if app was in the background for more than 1 second,
-        // avoids false triggers from brief transitions like the passkey picker
-        if let backgroundEnteredAt,
-           Date.now.timeIntervalSince(backgroundEnteredAt) < 1
-        {
+        if shouldSuppressMissingPasskeyAlert {
+            pendingMissingPasskeyAlert = false
+            showMissingPasskeyAlert = false
             return
         }
 
@@ -804,6 +810,27 @@ struct CoveMainView: View {
             .sheet(item: $app.sheetState, content: SheetContent)
             .onOpenURL(perform: handleFileOpen)
             .onChange(of: phase, initial: true, handleScenePhaseChange)
+            .onChange(of: CloudBackupManager.shared.status) { _, status in
+                if case .passkeyMissing = status {
+                    scheduleMissingPasskeyAlert()
+                } else {
+                    dismissMissingPasskeyAlert()
+                }
+            }
+            .onChange(of: CloudBackupManager.shared.recovery) { _, recovery in
+                if case .recovering(.repairPasskey) = recovery {
+                    dismissMissingPasskeyAlert()
+                } else if isCloudBackupPasskeyMissing {
+                    scheduleMissingPasskeyAlert()
+                }
+            }
+            .onChange(of: app.router.routes) { _, _ in
+                if isViewingCloudBackup {
+                    dismissMissingPasskeyAlert()
+                } else if isCloudBackupPasskeyMissing {
+                    scheduleMissingPasskeyAlert()
+                }
+            }
             .onChange(of: showCover) { _, isShowing in
                 if !isShowing, pendingMissingPasskeyAlert {
                     scheduleMissingPasskeyAlert()

@@ -17,6 +17,7 @@ private enum SheetState: Equatable {
     case backupImport
     case backupVerify
     case backupExportAuth
+    case cloudBackupOnboarding
 }
 
 private enum AlertState: Equatable {
@@ -264,7 +265,7 @@ struct MainSettingsScreen: View {
                 switch manager.status {
                 case .disabled:
                     SettingsRow(title: "Enable Cloud Backup", symbol: "icloud.and.arrow.up") {
-                        manager.enableCloudBackup()
+                        sheetState = .init(.cloudBackupOnboarding)
                     }
                 case .enabling:
                     HStack {
@@ -310,7 +311,8 @@ struct MainSettingsScreen: View {
 
                             Text("Backups can't be restored until you add a new passkey")
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.red.opacity(0.5))
+                                .lineLimit(1)
                         }
 
                         Spacer()
@@ -845,6 +847,15 @@ struct MainSettingsScreen: View {
                         }
                     }
             }
+
+        case .cloudBackupOnboarding:
+            CloudBackupEnableOnboardingView(
+                onEnable: {
+                    sheetState = .none
+                    CloudBackupManager.shared.enableCloudBackup()
+                },
+                onCancel: { sheetState = .none }
+            )
         }
     }
 

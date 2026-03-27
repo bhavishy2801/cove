@@ -63,7 +63,7 @@ struct MissingPasskeyContent: View {
                     .foregroundStyle(.red)
 
                 Text(
-                    "Your cloud backup is not accessible until you add a new passkey. Without it, your backups can't be restored."
+                    "Your cloud backup is not accessible until you use an existing passkey or add a new one. Without it, your backups can't be restored."
                 )
                 .font(.subheadline)
                 .foregroundStyle(.red.opacity(0.85))
@@ -81,15 +81,15 @@ struct MissingPasskeyContent: View {
                     HStack {
                         ProgressView()
                             .padding(.trailing, 4)
-                        Text("Creating Passkey...")
+                        Text("Opening Passkey Options...")
                     }
                 } else {
-                    Label("Add New Passkey", systemImage: "person.badge.key")
+                    Label("Use or Add Passkey", systemImage: "person.badge.key")
                 }
             }
             .disabled(isRepairing)
 
-            Text("Add a new passkey to make your existing cloud backup accessible again")
+            Text("Use an existing passkey or add a new one to make your cloud backup accessible again")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

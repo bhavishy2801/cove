@@ -104,6 +104,20 @@ struct CloudBackupDetailScreen: View {
                 "This will replace your entire cloud backup. Wallets that only exist in the current cloud backup will be lost."
             )
         }
+        .alert(
+            "Passkey Options",
+            isPresented: $manager.showPasskeyChoiceDialog
+        ) {
+            Button("Use Existing Passkey") {
+                manager.repairPasskey()
+            }
+            Button("Create New Passkey") {
+                manager.repairPasskeyNoDiscovery()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Would you like to use an existing passkey or create a new one?")
+        }
     }
 
     private func refreshSyncHealth() {

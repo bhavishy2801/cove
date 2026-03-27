@@ -10,7 +10,9 @@ use tracing::info;
 use zeroize::Zeroizing;
 
 use super::super::{CloudBackupError, RP_ID, RustCloudBackupManager, cspp_master_key_record_id};
-use crate::manager::cloud_backup_manager::wallets::create_prf_key_without_persisting;
+use crate::manager::cloud_backup_manager::wallets::{
+    create_prf_key_without_persisting, discover_or_create_prf_key_without_persisting,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalKeyProof {
@@ -43,6 +45,7 @@ impl WrapperRepairError {
 #[derive(Debug)]
 pub(super) enum WrapperRepairStrategy {
     CreateNew,
+    DiscoverOrCreate,
     ReuseExisting(Vec<u8>),
 }
 
@@ -195,6 +198,16 @@ impl<'a> WrapperRepairOperation<'a> {
                     prf_key: new_prf.prf_key,
                     prf_salt: new_prf.prf_salt,
                     credential_id: new_prf.credential_id,
+                })
+            }
+            WrapperRepairStrategy::DiscoverOrCreate => {
+                let passkey = discover_or_create_prf_key_without_persisting(self.passkey)?;
+                info!("Using discovered-or-new passkey for wrapper repair");
+
+                Ok(WrapperRepairCredentials {
+                    prf_key: passkey.prf_key,
+                    prf_salt: passkey.prf_salt,
+                    credential_id: passkey.credential_id,
                 })
             }
             WrapperRepairStrategy::ReuseExisting(credential_id) => {

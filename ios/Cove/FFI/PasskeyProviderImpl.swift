@@ -5,6 +5,11 @@ import CryptoKit
 import Foundation
 
 final class PasskeyProviderImpl: PasskeyProvider, @unchecked Sendable {
+    private func credentialSummary(_ credentialId: Data) -> String {
+        let prefix = credentialId.prefix(4).map { String(format: "%02x", $0) }.joined()
+        return "len=\(credentialId.count) prefix=\(prefix)"
+    }
+
     func isPrfSupported() -> Bool {
         // PRF is guaranteed on iOS 18.4+ (our minimum deployment target)
         true
@@ -126,6 +131,9 @@ final class PasskeyProviderImpl: PasskeyProvider, @unchecked Sendable {
             "checkPasskeyPresence must not be called from the main thread"
         )
 
+        let credentialSummary = credentialSummary(credentialId)
+        Log.info("[PASSKEY] presence check start rpId=\(rpId) credential=\(credentialSummary)")
+
         let delegate = PasskeyExistenceDelegate()
         let controller: ASAuthorizationController
 
@@ -157,10 +165,16 @@ final class PasskeyProviderImpl: PasskeyProvider, @unchecked Sendable {
         let gotResult = delegate.semaphore.wait(timeout: .now() + 1.0)
 
         if gotResult == .timedOut {
+            Log.warn(
+                "[PASSKEY] presence check timed out after 1s rpId=\(rpId) credential=\(credentialSummary)"
+            )
             DispatchQueue.main.async { controller.cancel() }
             return .indeterminate
         }
 
+        Log.info(
+            "[PASSKEY] presence check resolved rpId=\(rpId) credential=\(credentialSummary) presence=\(delegate.presence)"
+        )
         return delegate.presence
     }
 
@@ -303,6 +317,7 @@ private class PasskeyExistenceDelegate: NSObject, ASAuthorizationControllerDeleg
         didCompleteWithAuthorization _: ASAuthorization
     ) {
         presence = .present
+        Log.info("[PASSKEY] presence check authorization succeeded")
         semaphore.signal()
     }
 
@@ -310,10 +325,28 @@ private class PasskeyExistenceDelegate: NSObject, ASAuthorizationControllerDeleg
         controller _: ASAuthorizationController,
         didCompleteWithError error: Error
     ) {
-        if let authError = error as? ASAuthorizationError,
-           authError.code == .notInteractive
-        {
-            presence = .missing
+        if let authError = error as? ASAuthorizationError {
+            let noCredentialsAvailable = error.localizedDescription.localizedCaseInsensitiveContains(
+                "no credentials available"
+            )
+
+            if authError.code == .notInteractive {
+                presence = .missing
+                Log.info(
+                    "[PASSKEY] presence check failed with notInteractive code=\(authError.code.rawValue) description=\(error.localizedDescription)"
+                )
+            } else if authError.code == .canceled, noCredentialsAvailable {
+                presence = .missing
+                Log.info(
+                    "[PASSKEY] presence check reclassified canceled as missing code=\(authError.code.rawValue) description=\(error.localizedDescription)"
+                )
+            } else {
+                Log.warn(
+                    "[PASSKEY] presence check failed with auth error code=\(authError.code.rawValue) description=\(error.localizedDescription)"
+                )
+            }
+        } else {
+            Log.warn("[PASSKEY] presence check failed with non-auth error: \(error.localizedDescription)")
         }
         semaphore.signal()
     }

@@ -2,8 +2,9 @@ use cove_device::passkey::PasskeyError;
 use rand::RngExt as _;
 use tracing::info;
 
+use super::super::{CloudBackupError, RP_ID};
+use super::load_stored_credential_id;
 use super::session::VerificationSession;
-use super::{CloudBackupError, RP_ID, load_stored_credential_id};
 
 #[derive(Debug, PartialEq)]
 pub(super) struct AuthenticatedPasskey {

@@ -44,6 +44,10 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
         currentState.progress.map { ($0.completed, $0.total) }
     }
 
+    var restoreProgress: CloudBackupRestoreProgress? {
+        currentState.restoreProgress
+    }
+
     var restoreReport: CloudBackupRestoreReport? {
         currentState.restoreReport
     }
@@ -120,6 +124,10 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
         rustBridge.async { self.rust.repairPasskey() }
     }
 
+    func repairPasskeyNoDiscovery() {
+        rustBridge.async { self.rust.repairPasskeyNoDiscovery() }
+    }
+
     func syncUnsynced() {
         rustBridge.async { self.rust.syncUnsynced() }
     }
@@ -130,6 +138,10 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
 
     func restoreCloudWallet(recordId: String) {
         rustBridge.async { self.rust.restoreCloudWallet(recordId: recordId) }
+    }
+
+    func restoreFromCloudBackup() {
+        rustBridge.async { self.rust.restoreFromCloudBackup() }
     }
 
     func deleteCloudWallet(recordId: String) {
@@ -145,6 +157,7 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
         case .updated,
              .statusChanged,
              .progressUpdated,
+             .restoreProgressUpdated,
              .enableComplete,
              .restoreComplete,
              .syncFailed,

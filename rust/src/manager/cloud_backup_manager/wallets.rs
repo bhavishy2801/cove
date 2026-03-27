@@ -102,6 +102,42 @@ pub(super) fn create_prf_key_without_persisting(
     create_new_prf_key(passkey, "Creating new passkey for wrapper repair")
 }
 
+/// Try to discover an existing passkey, fall back to creating a new one
+///
+/// Used by wrapper repair so keychain persistence still happens only after
+/// the repaired master-key wrapper upload succeeds
+pub(super) fn discover_or_create_prf_key_without_persisting(
+    passkey: &PasskeyAccess,
+) -> Result<UnpersistedPrfKey, CloudBackupError> {
+    info!("Attempting passkey discovery before creating new wrapper-repair passkey");
+    let prf_salt: [u8; 32] = rand::rng().random();
+
+    match passkey.discover_and_authenticate_with_prf(
+        RP_ID.to_string(),
+        prf_salt.to_vec(),
+        random_challenge(),
+    ) {
+        Ok(discovered) => {
+            let prf_key = prf_output_to_key(discovered.prf_output)?;
+            info!("Discovered existing passkey for wrapper repair");
+
+            Ok(UnpersistedPrfKey { prf_key, prf_salt, credential_id: discovered.credential_id })
+        }
+        Err(cove_device::passkey::PasskeyError::UserCancelled) => {
+            info!("User cancelled passkey discovery for wrapper repair");
+            Err(CloudBackupError::PasskeyDiscoveryCancelled)
+        }
+        Err(cove_device::passkey::PasskeyError::NoCredentialFound) => {
+            info!("No existing passkey found for wrapper repair, creating new");
+            create_prf_key_without_persisting(passkey)
+        }
+        Err(error) => {
+            warn!("Wrapper-repair discovery failed ({error}), falling back to create");
+            create_prf_key_without_persisting(passkey)
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub(super) struct NamespaceMatch {
     pub(super) namespace_id: String,
@@ -320,6 +356,17 @@ pub(super) fn restore_single_wallet(
 ) -> Result<(), CloudBackupError> {
     let wallet = download_wallet_backup(cloud, namespace, record_id, critical_key)?;
 
+    restore_downloaded_wallet_for_restore(&wallet, existing_fingerprints)
+}
+
+pub(super) fn restore_downloaded_wallet_for_restore(
+    wallet: &DownloadedWalletBackup,
+    existing_fingerprints: &mut Vec<(
+        crate::wallet::fingerprint::Fingerprint,
+        Network,
+        LocalWalletMode,
+    )>,
+) -> Result<(), CloudBackupError> {
     if should_skip_duplicate_wallet(&wallet.metadata, existing_fingerprints) {
         return Ok(());
     }
@@ -360,39 +407,15 @@ pub(super) fn discover_or_create_prf_key(
     keychain: &Keychain,
     passkey: &PasskeyAccess,
 ) -> Result<([u8; 32], [u8; 32]), CloudBackupError> {
-    info!("Attempting passkey discovery before creating new");
-    let prf_salt: [u8; 32] = rand::rng().random();
+    let unpersisted = discover_or_create_prf_key_without_persisting(passkey)?;
 
-    match passkey.discover_and_authenticate_with_prf(
-        RP_ID.to_string(),
-        prf_salt.to_vec(),
-        random_challenge(),
-    ) {
-        Ok(discovered) => {
-            let prf_key = prf_output_to_key(discovered.prf_output)?;
+    keychain.delete(CSPP_CREDENTIAL_ID_KEY.to_string());
+    keychain.delete(CSPP_PRF_SALT_KEY.to_string());
+    keychain
+        .save_cspp_passkey(&unpersisted.credential_id, unpersisted.prf_salt)
+        .map_err_prefix("save cspp credentials", CloudBackupError::Internal)?;
 
-            info!("Discovered existing passkey, reusing");
-            keychain.delete(CSPP_CREDENTIAL_ID_KEY.to_string());
-            keychain.delete(CSPP_PRF_SALT_KEY.to_string());
-            keychain
-                .save_cspp_passkey(&discovered.credential_id, prf_salt)
-                .map_err_prefix("save cspp credentials", CloudBackupError::Internal)?;
-
-            Ok((prf_key, prf_salt))
-        }
-        Err(cove_device::passkey::PasskeyError::UserCancelled) => {
-            info!("User cancelled passkey discovery");
-            Err(CloudBackupError::PasskeyDiscoveryCancelled)
-        }
-        Err(cove_device::passkey::PasskeyError::NoCredentialFound) => {
-            info!("No existing passkey found, creating new");
-            obtain_prf_key(keychain, passkey)
-        }
-        Err(error) => {
-            warn!("Discovery failed ({error}), falling back to create");
-            obtain_prf_key(keychain, passkey)
-        }
-    }
+    Ok((unpersisted.prf_key, unpersisted.prf_salt))
 }
 
 pub(super) fn download_wallet_backup(
