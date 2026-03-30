@@ -17877,6 +17877,7 @@ public enum CloudBackupManagerAction: Equatable, Hashable {
     case enableCloudBackupNoDiscovery
     case discardPendingEnableCloudBackup
     case restoreFromCloudBackup
+    case cancelRestore
     case startVerification
     case startVerificationDiscoverable
     case dismissVerificationPrompt
@@ -17922,31 +17923,33 @@ public struct FfiConverterTypeCloudBackupManagerAction: FfiConverterRustBuffer {
         
         case 5: return .restoreFromCloudBackup
         
-        case 6: return .startVerification
+        case 6: return .cancelRestore
         
-        case 7: return .startVerificationDiscoverable
+        case 7: return .startVerification
         
-        case 8: return .dismissVerificationPrompt
+        case 8: return .startVerificationDiscoverable
         
-        case 9: return .recreateManifest
+        case 9: return .dismissVerificationPrompt
         
-        case 10: return .reinitializeBackup
+        case 10: return .recreateManifest
         
-        case 11: return .repairPasskey
+        case 11: return .reinitializeBackup
         
-        case 12: return .repairPasskeyNoDiscovery
+        case 12: return .repairPasskey
         
-        case 13: return .syncUnsynced
+        case 13: return .repairPasskeyNoDiscovery
         
-        case 14: return .fetchCloudOnly
+        case 14: return .syncUnsynced
         
-        case 15: return .restoreCloudWallet(recordId: try FfiConverterString.read(from: &buf)
+        case 15: return .fetchCloudOnly
+        
+        case 16: return .restoreCloudWallet(recordId: try FfiConverterString.read(from: &buf)
         )
         
-        case 16: return .deleteCloudWallet(recordId: try FfiConverterString.read(from: &buf)
+        case 17: return .deleteCloudWallet(recordId: try FfiConverterString.read(from: &buf)
         )
         
-        case 17: return .refreshDetail
+        case 18: return .refreshDetail
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -17976,54 +17979,58 @@ public struct FfiConverterTypeCloudBackupManagerAction: FfiConverterRustBuffer {
             writeInt(&buf, Int32(5))
         
         
-        case .startVerification:
+        case .cancelRestore:
             writeInt(&buf, Int32(6))
         
         
-        case .startVerificationDiscoverable:
+        case .startVerification:
             writeInt(&buf, Int32(7))
         
         
-        case .dismissVerificationPrompt:
+        case .startVerificationDiscoverable:
             writeInt(&buf, Int32(8))
         
         
-        case .recreateManifest:
+        case .dismissVerificationPrompt:
             writeInt(&buf, Int32(9))
         
         
-        case .reinitializeBackup:
+        case .recreateManifest:
             writeInt(&buf, Int32(10))
         
         
-        case .repairPasskey:
+        case .reinitializeBackup:
             writeInt(&buf, Int32(11))
         
         
-        case .repairPasskeyNoDiscovery:
+        case .repairPasskey:
             writeInt(&buf, Int32(12))
         
         
-        case .syncUnsynced:
+        case .repairPasskeyNoDiscovery:
             writeInt(&buf, Int32(13))
         
         
-        case .fetchCloudOnly:
+        case .syncUnsynced:
             writeInt(&buf, Int32(14))
         
         
-        case let .restoreCloudWallet(recordId):
+        case .fetchCloudOnly:
             writeInt(&buf, Int32(15))
-            FfiConverterString.write(recordId, into: &buf)
-            
         
-        case let .deleteCloudWallet(recordId):
+        
+        case let .restoreCloudWallet(recordId):
             writeInt(&buf, Int32(16))
             FfiConverterString.write(recordId, into: &buf)
             
         
-        case .refreshDetail:
+        case let .deleteCloudWallet(recordId):
             writeInt(&buf, Int32(17))
+            FfiConverterString.write(recordId, into: &buf)
+            
+        
+        case .refreshDetail:
+            writeInt(&buf, Int32(18))
         
         }
     }

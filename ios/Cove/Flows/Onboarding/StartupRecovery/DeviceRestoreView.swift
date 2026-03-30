@@ -87,6 +87,7 @@ struct DeviceRestoreView: View {
 
             await MainActor.run {
                 guard case .restoring = phase else { return }
+                backupManager.dispatch(action: .cancelRestore)
                 phase = .error("Restore timed out. Please try again.")
             }
         }

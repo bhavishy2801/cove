@@ -4,7 +4,11 @@ mod pending;
 mod verify;
 mod wallets;
 
-use std::sync::{Arc, LazyLock, atomic::AtomicBool};
+use std::path::Path;
+use std::sync::{
+    Arc, LazyLock,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 use cove_cspp::CsppStore as _;
 use cove_cspp::backup_data::MASTER_KEY_RECORD_ID;
@@ -22,7 +26,7 @@ use cove_types::network::Network;
 use crate::backup::model::DescriptorPair as LocalDescriptorPair;
 use crate::database::Database;
 use crate::database::cloud_backup::{PersistedCloudBackupState, PersistedCloudBackupStatus};
-use crate::wallet::metadata::{WalletMode as LocalWalletMode, WalletType};
+use crate::wallet::metadata::{WalletId, WalletMode as LocalWalletMode, WalletType};
 
 use self::wallets::{UnpersistedPrfKey, all_local_wallets, count_all_wallets};
 use super::cloud_backup_detail_manager::{
@@ -54,6 +58,7 @@ pub enum CloudBackupManagerAction {
     EnableCloudBackupNoDiscovery,
     DiscardPendingEnableCloudBackup,
     RestoreFromCloudBackup,
+    CancelRestore,
     StartVerification,
     StartVerificationDiscoverable,
     DismissVerificationPrompt,
@@ -286,6 +291,9 @@ pub(crate) enum CloudBackupError {
 
     #[error("user cancelled passkey discovery")]
     PasskeyDiscoveryCancelled,
+
+    #[error("restore cancelled")]
+    Cancelled,
 }
 
 #[uniffi::export(callback_interface)]
@@ -301,6 +309,7 @@ pub struct RustCloudBackupManager {
     pending_enable_session: Arc<Mutex<Option<PendingEnableSession>>>,
     pending_upload_verifier_running: Arc<AtomicBool>,
     pending_upload_verifier_wakeup: Arc<Notify>,
+    restore_operation_id: Arc<AtomicU64>,
 }
 
 impl RustCloudBackupManager {
@@ -331,6 +340,7 @@ impl RustCloudBackupManager {
             pending_enable_session: Arc::new(Mutex::new(None)),
             pending_upload_verifier_running: Arc::new(AtomicBool::new(false)),
             pending_upload_verifier_wakeup: Arc::new(Notify::new()),
+            restore_operation_id: Arc::new(AtomicU64::new(0)),
         }
         .into()
     }
@@ -488,6 +498,55 @@ impl RustCloudBackupManager {
         );
     }
 
+    fn next_restore_operation_id(&self) -> u64 {
+        self.restore_operation_id.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    fn invalidate_restore_operation(&self) {
+        self.restore_operation_id.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn ensure_current_restore_operation(
+        &self,
+        operation_id: u64,
+    ) -> Result<(), CloudBackupError> {
+        if self.restore_operation_id.load(Ordering::Acquire) == operation_id {
+            return Ok(());
+        }
+
+        Err(CloudBackupError::Cancelled)
+    }
+
+    pub(crate) fn set_status_for_restore_operation(
+        &self,
+        operation_id: u64,
+        status: CloudBackupStatus,
+    ) -> Result<(), CloudBackupError> {
+        self.ensure_current_restore_operation(operation_id)?;
+        self.set_status(status);
+        Ok(())
+    }
+
+    pub(crate) fn set_restore_progress_for_restore_operation(
+        &self,
+        operation_id: u64,
+        progress: Option<CloudBackupRestoreProgress>,
+    ) -> Result<(), CloudBackupError> {
+        self.ensure_current_restore_operation(operation_id)?;
+        self.set_restore_progress(progress);
+        Ok(())
+    }
+
+    pub(crate) fn set_restore_report_for_restore_operation(
+        &self,
+        operation_id: u64,
+        report: Option<CloudBackupRestoreReport>,
+    ) -> Result<(), CloudBackupError> {
+        self.ensure_current_restore_operation(operation_id)?;
+        self.set_restore_report(report);
+        Ok(())
+    }
+
     pub(crate) fn persist_cloud_backup_state(
         &self,
         state: &PersistedCloudBackupState,
@@ -501,6 +560,23 @@ impl RustCloudBackupManager {
         self.set_status(Self::runtime_status_for(state));
         self.refresh_persisted_flags();
 
+        Ok(())
+    }
+
+    pub(crate) fn persist_cloud_backup_state_for_restore_operation(
+        &self,
+        operation_id: u64,
+        state: &PersistedCloudBackupState,
+        context: &str,
+    ) -> Result<(), CloudBackupError> {
+        self.ensure_current_restore_operation(operation_id)?;
+        Database::global()
+            .cloud_backup_state
+            .set(state)
+            .map_err(|error| CloudBackupError::Internal(format!("{context}: {error}")))?;
+        self.ensure_current_restore_operation(operation_id)?;
+        self.set_status(Self::runtime_status_for(state));
+        self.refresh_persisted_flags();
         Ok(())
     }
 
@@ -748,16 +824,47 @@ impl RustCloudBackupManager {
         self.clear_pending_enable_session();
     }
 
+    pub(crate) fn cancel_restore(&self) {
+        let status = self.state.read().status.clone();
+        if !matches!(status, CloudBackupStatus::Restoring) {
+            return;
+        }
+
+        self.invalidate_restore_operation();
+        self.set_progress(None);
+        self.set_restore_progress(None);
+        self.set_restore_report(None);
+        self.set_status(Self::runtime_status_for(&Self::load_persisted_state()));
+        info!("restore_from_cloud_backup: cancelled active restore");
+    }
+
     pub(crate) fn restore_from_cloud_backup(&self) {
         info!("restore_from_cloud_backup: spawning restore task");
-        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
-            "restore_from_cloud_backup",
-            None,
-            |this| {
-                info!("restore_from_cloud_backup: task started");
-                this.do_restore_from_cloud_backup()
-            },
-        );
+        let this = CLOUD_BACKUP_MANAGER.clone();
+        {
+            let status = this.state.read().status.clone();
+            if matches!(status, CloudBackupStatus::Enabling | CloudBackupStatus::Restoring) {
+                warn!("restore_from_cloud_backup called while {status:?}, ignoring");
+                return;
+            }
+        }
+
+        let operation_id = this.next_restore_operation_id();
+        cove_tokio::task::spawn_blocking(move || {
+            info!("restore_from_cloud_backup: task started");
+            match this.do_restore_from_cloud_backup(operation_id) {
+                Ok(()) => {}
+                Err(CloudBackupError::Cancelled) => {
+                    info!("restore_from_cloud_backup: task cancelled");
+                }
+                Err(error) => {
+                    error!("restore_from_cloud_backup failed: {error}");
+                    this.set_progress(None);
+                    this.set_restore_progress(None);
+                    this.set_status(CloudBackupStatus::Error(error.to_string()));
+                }
+            }
+        });
     }
 }
 
@@ -772,7 +879,7 @@ impl RustCloudBackupManager {
 pub fn wipe_local_data() {
     use crate::database::migration::log_remove_file;
 
-    delete_all_wallet_keychain_items();
+    wipe_wallet_keychain_items_for_catastrophic_recovery();
 
     let root = &*cove_common::consts::ROOT_DATA_DIR;
 
@@ -814,26 +921,72 @@ pub fn cspp_namespaces_subdirectory() -> String {
     cove_cspp::backup_data::NAMESPACES_SUBDIRECTORY.to_string()
 }
 
-/// Delete keychain items for all wallets across all networks and modes
-///
-/// Best-effort: if the database isn't initialized (e.g. key mismatch), skip
-fn delete_all_wallet_keychain_items() {
+fn wipe_wallet_keychain_items_for_catastrophic_recovery() {
+    let keychain = Keychain::global();
+    let wallet_ids = catastrophic_wipe_wallet_ids(
+        persisted_wallet_ids_for_catastrophic_wipe(),
+        &cove_common::consts::WALLET_DATA_DIR,
+    );
+
+    for wallet_id in wallet_ids {
+        keychain.delete_wallet_items(&wallet_id);
+    }
+}
+
+fn persisted_wallet_ids_for_catastrophic_wipe() -> Option<Vec<WalletId>> {
     let Some(db_swap) = crate::database::DATABASE.get() else {
-        warn!("Database not initialized, skipping keychain cleanup during wipe");
-        return;
+        warn!("Database not initialized, deriving wipe wallet ids from wallet data dir");
+        return None;
     };
 
     let db = db_swap.load();
-    let keychain = Keychain::global();
+    Some(all_local_wallets(&db).into_iter().map(|wallet| wallet.id).collect())
+}
 
-    for wallet in all_local_wallets(&db) {
-        keychain.delete_wallet_items(&wallet.id);
+fn catastrophic_wipe_wallet_ids(
+    persisted_wallet_ids: Option<Vec<WalletId>>,
+    wallet_data_dir: &Path,
+) -> Vec<WalletId> {
+    if let Some(wallet_ids) = persisted_wallet_ids {
+        return wallet_ids;
     }
+
+    wallet_ids_from_wallet_data_dir(wallet_data_dir)
+}
+
+fn wallet_ids_from_wallet_data_dir(wallet_data_dir: &Path) -> Vec<WalletId> {
+    let mut wallet_ids = std::collections::BTreeSet::new();
+    let entries = match std::fs::read_dir(wallet_data_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            warn!("Failed to read wallet data dir during catastrophic wipe: {error}");
+            return Vec::new();
+        }
+    };
+
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let file_name = entry.file_name();
+        let Some(wallet_id) = file_name.to_str() else {
+            continue;
+        };
+        wallet_ids.insert(wallet_id.to_owned());
+    }
+
+    wallet_ids.into_iter().map(WalletId::from).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn convert_cloud_secret_mnemonic() {
@@ -967,5 +1120,80 @@ mod tests {
         let state = manager.state.read();
         assert!(state.restore_progress.is_none());
         assert_eq!(state.restore_report, Some(report));
+    }
+
+    #[test]
+    fn stale_restore_operation_cannot_update_restore_progress() {
+        let manager = RustCloudBackupManager::init();
+        let stale_operation_id = manager.next_restore_operation_id();
+        let current_operation_id = manager.next_restore_operation_id();
+        let progress = CloudBackupRestoreProgress {
+            stage: CloudBackupRestoreStage::Downloading,
+            completed: 1,
+            total: Some(3),
+        };
+
+        let error = manager
+            .set_restore_progress_for_restore_operation(stale_operation_id, Some(progress.clone()))
+            .unwrap_err();
+
+        assert!(matches!(error, CloudBackupError::Cancelled));
+        assert_eq!(manager.state.read().restore_progress, None);
+
+        manager
+            .set_restore_progress_for_restore_operation(
+                current_operation_id,
+                Some(progress.clone()),
+            )
+            .unwrap();
+
+        assert_eq!(manager.state.read().restore_progress, Some(progress));
+    }
+
+    #[test]
+    fn invalidated_restore_operation_becomes_cancelled() {
+        let manager = RustCloudBackupManager::init();
+        let operation_id = manager.next_restore_operation_id();
+
+        manager.invalidate_restore_operation();
+
+        let error = manager.ensure_current_restore_operation(operation_id).unwrap_err();
+        assert!(matches!(error, CloudBackupError::Cancelled));
+    }
+
+    #[test]
+    fn catastrophic_wipe_wallet_ids_prefers_persisted_wallet_ids() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("wallet-from-dir")).unwrap();
+
+        let wallet_ids = catastrophic_wipe_wallet_ids(
+            Some(vec![WalletId::from("wallet-from-db".to_string())]),
+            dir.path(),
+        );
+
+        assert_eq!(wallet_ids, vec![WalletId::from("wallet-from-db".to_string())]);
+    }
+
+    #[test]
+    fn wallet_ids_from_wallet_data_dir_uses_directory_names() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("AbCd123")).unwrap();
+        std::fs::create_dir_all(dir.path().join("wallet-two")).unwrap();
+        std::fs::write(dir.path().join("bdk_wallet_abcd123.db"), "").unwrap();
+
+        let wallet_ids = wallet_ids_from_wallet_data_dir(dir.path());
+
+        assert_eq!(
+            wallet_ids,
+            vec![WalletId::from("AbCd123".to_string()), WalletId::from("wallet-two".to_string()),],
+        );
+    }
+
+    #[test]
+    fn wallet_ids_from_wallet_data_dir_returns_empty_for_missing_dir() {
+        let dir = TempDir::new().unwrap();
+        let wallet_ids = wallet_ids_from_wallet_data_dir(&dir.path().join("missing"));
+
+        assert!(wallet_ids.is_empty());
     }
 }

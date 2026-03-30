@@ -28,11 +28,15 @@ use crate::wallet::metadata::WalletMetadata;
 impl RustCloudBackupManager {
     fn send_restore_progress(
         &self,
+        operation_id: u64,
         stage: CloudBackupRestoreStage,
         completed: u32,
         total: Option<u32>,
-    ) {
-        self.set_restore_progress(Some(CloudBackupRestoreProgress { stage, completed, total }));
+    ) -> Result<(), CloudBackupError> {
+        self.set_restore_progress_for_restore_operation(
+            operation_id,
+            Some(CloudBackupRestoreProgress { stage, completed, total }),
+        )
     }
 
     pub(crate) fn do_sync_unsynced_wallets(&self) -> Result<(), CloudBackupError> {
@@ -420,12 +424,15 @@ impl RustCloudBackupManager {
         )
     }
 
-    pub(super) fn do_restore_from_cloud_backup(&self) -> Result<(), CloudBackupError> {
+    pub(super) fn do_restore_from_cloud_backup(
+        &self,
+        operation_id: u64,
+    ) -> Result<(), CloudBackupError> {
         self.set_progress(None);
         self.set_restore_progress(None);
         self.set_restore_report(None);
-        self.set_status(CloudBackupStatus::Restoring);
-        self.send_restore_progress(CloudBackupRestoreStage::Finding, 0, None);
+        self.set_status_for_restore_operation(operation_id, CloudBackupStatus::Restoring)?;
+        self.send_restore_progress(operation_id, CloudBackupRestoreStage::Finding, 0, None)?;
 
         let cloud = CloudStorage::global();
         let keychain = Keychain::global();
@@ -435,10 +442,12 @@ impl RustCloudBackupManager {
         let passkey = PasskeyAccess::global();
         let (master_key, namespace_id) = match self.restore_via_passkey_matching(cloud, passkey) {
             Ok(matched) => {
+                self.ensure_current_restore_operation(operation_id)?;
                 cspp.save_master_key(&matched.master_key)
                     .map_err_prefix("save master key", CloudBackupError::Internal)?;
                 cove_cspp::reset_master_key_cache();
 
+                self.ensure_current_restore_operation(operation_id)?;
                 keychain
                     .save_cspp_passkey_and_namespace(
                         &matched.credential_id,
@@ -458,6 +467,7 @@ impl RustCloudBackupManager {
         };
 
         // download and restore wallets
+        self.ensure_current_restore_operation(operation_id)?;
         let wallet_record_ids =
             cloud.list_wallet_backups(namespace_id.clone()).map_err_str(CloudBackupError::Cloud)?;
 
@@ -472,17 +482,24 @@ impl RustCloudBackupManager {
             .map_err_prefix("collect fingerprints", CloudBackupError::Internal)?;
 
         let downloaded_wallets = self.download_wallets_for_restore(
+            operation_id,
             cloud,
             &namespace_id,
             &wallet_record_ids,
             &critical_key,
             &mut report,
-        );
+        )?;
         let restore_total = downloaded_wallets.len() as u32;
 
-        self.send_restore_progress(CloudBackupRestoreStage::Restoring, 0, Some(restore_total));
+        self.send_restore_progress(
+            operation_id,
+            CloudBackupRestoreStage::Restoring,
+            0,
+            Some(restore_total),
+        )?;
 
         for (index, (record_id, wallet)) in downloaded_wallets.iter().enumerate() {
+            self.ensure_current_restore_operation(operation_id)?;
             match restore_downloaded_wallet_for_restore(wallet, &mut existing_fingerprints) {
                 Ok(()) => report.wallets_restored += 1,
                 Err(error) => {
@@ -493,15 +510,16 @@ impl RustCloudBackupManager {
             }
 
             self.send_restore_progress(
+                operation_id,
                 CloudBackupRestoreStage::Restoring,
                 (index + 1) as u32,
                 Some(restore_total),
-            );
+            )?;
         }
 
         if report.wallets_restored == 0 && report.wallets_failed > 0 {
-            self.set_restore_progress(None);
-            self.set_restore_report(Some(report));
+            self.set_restore_progress_for_restore_operation(operation_id, None)?;
+            self.set_restore_report_for_restore_operation(operation_id, Some(report))?;
             return Err(CloudBackupError::Internal("all wallets failed to restore".into()));
         }
 
@@ -515,11 +533,15 @@ impl RustCloudBackupManager {
             last_verification_requested_at: None,
             last_verification_dismissed_at: None,
         };
-        self.persist_cloud_backup_state(&state, "persist restored cloud backup state")?;
+        self.persist_cloud_backup_state_for_restore_operation(
+            operation_id,
+            &state,
+            "persist restored cloud backup state",
+        )?;
 
-        self.set_restore_progress(None);
-        self.set_restore_report(Some(report));
-        self.set_status(CloudBackupStatus::Enabled);
+        self.set_restore_progress_for_restore_operation(operation_id, None)?;
+        self.set_restore_report_for_restore_operation(operation_id, Some(report))?;
+        self.set_status_for_restore_operation(operation_id, CloudBackupStatus::Enabled)?;
 
         info!("Cloud backup restore complete");
         Ok(())
@@ -527,19 +549,26 @@ impl RustCloudBackupManager {
 
     fn download_wallets_for_restore(
         &self,
+        operation_id: u64,
         cloud: &CloudStorage,
         namespace_id: &str,
         wallet_record_ids: &[String],
         critical_key: &[u8; 32],
         report: &mut CloudBackupRestoreReport,
-    ) -> Vec<(String, DownloadedWalletBackup)> {
+    ) -> Result<Vec<(String, DownloadedWalletBackup)>, CloudBackupError> {
         let total = wallet_record_ids.len() as u32;
 
-        self.send_restore_progress(CloudBackupRestoreStage::Downloading, 0, Some(total));
+        self.send_restore_progress(
+            operation_id,
+            CloudBackupRestoreStage::Downloading,
+            0,
+            Some(total),
+        )?;
 
         let mut downloaded_wallets = Vec::with_capacity(wallet_record_ids.len());
 
         for (index, record_id) in wallet_record_ids.iter().enumerate() {
+            self.ensure_current_restore_operation(operation_id)?;
             match download_wallet_backup(cloud, namespace_id, record_id, critical_key) {
                 Ok(wallet) => downloaded_wallets.push((record_id.clone(), wallet)),
                 Err(error) => {
@@ -550,13 +579,14 @@ impl RustCloudBackupManager {
             }
 
             self.send_restore_progress(
+                operation_id,
                 CloudBackupRestoreStage::Downloading,
                 (index + 1) as u32,
                 Some(total),
-            );
+            )?;
         }
 
-        downloaded_wallets
+        Ok(downloaded_wallets)
     }
 
     fn enable_cloud_backup_with_prf_key(

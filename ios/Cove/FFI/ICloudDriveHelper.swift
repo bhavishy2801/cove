@@ -147,6 +147,15 @@ final class ICloudDriveHelper: @unchecked Sendable {
             .appendingPathComponent(filename)
     }
 
+    func masterKeyFileReadURL(namespace: String) throws -> URL {
+        let recordId = csppMasterKeyRecordId()
+        let hash = SHA256.hash(data: Data(recordId.utf8))
+        let hexHash = hash.compactMap { String(format: "%02x", $0) }.joined()
+        let filename = "masterkey-\(hexHash).json"
+        return try namespaceDirectoryReadURL(namespace: namespace)
+            .appendingPathComponent(filename)
+    }
+
     /// Wallet backup file URL within a namespace
     ///
     /// Filename: wallet-{recordId}.json — recordId is already SHA256(wallet_id)
@@ -337,23 +346,26 @@ final class ICloudDriveHelper: @unchecked Sendable {
     ///
     /// Tries startDownloadingUbiquitousItem as a hint, then uses NSFileCoordinator
     /// which forces the download through a different (more reliable) path
-    func downloadFile(url: URL, recordId _: String) throws -> Data {
+    func downloadFile(url: URL, recordId: String) throws -> Data {
         let filename = url.lastPathComponent
 
-        // if already downloaded locally, just read it
-        if FileManager.default.fileExists(atPath: url.path),
-           case .current = downloadState(for: url)
-        {
-            Log.info("downloadFile: \(filename) already available locally")
-            return try coordinatedRead(from: url)
+        try ensureDownloaded(url: url, recordId: recordId)
+
+        let resolvedURL =
+            resolvedMetadataItemIfPresent(
+                named: filename,
+                parentDirectoryURL: url.deletingLastPathComponent()
+            )?.url ?? url
+
+        if resolvedURL != url {
+            Log.info(
+                "downloadFile: using metadata URL for \(filename) local=\(url.path) metadata=\(resolvedURL.path)"
+            )
+        } else {
+            Log.info("downloadFile: \(filename) reading via NSFileCoordinator")
         }
 
-        // hint to iCloud daemon to start downloading
-        try? FileManager.default.startDownloadingUbiquitousItem(at: url)
-
-        // coordinated read blocks until file is downloaded
-        Log.info("downloadFile: \(filename) reading via NSFileCoordinator")
-        return try coordinatedRead(from: url)
+        return try coordinatedRead(from: resolvedURL)
     }
 
     // MARK: - Upload verification

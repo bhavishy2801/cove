@@ -21,12 +21,12 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
     // MARK: - Download
 
     func downloadMasterKeyBackup(namespace: String) throws -> Data {
-        let url = try helper.masterKeyFileURL(namespace: namespace)
+        let url = try helper.masterKeyFileReadURL(namespace: namespace)
         return try helper.downloadFile(url: url, recordId: "masterkey-\(namespace)")
     }
 
     func downloadWalletBackup(namespace: String, recordId: String) throws -> Data {
-        let url = try helper.walletFileURL(namespace: namespace, recordId: recordId)
+        let url = try helper.walletFileReadURL(namespace: namespace, recordId: recordId)
         return try helper.downloadFile(url: url, recordId: recordId)
     }
 

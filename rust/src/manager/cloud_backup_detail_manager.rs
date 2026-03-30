@@ -65,6 +65,7 @@ impl RustCloudBackupManager {
                 self.discard_pending_enable_cloud_backup();
             }
             Action::RestoreFromCloudBackup => self.restore_from_cloud_backup(),
+            Action::CancelRestore => self.cancel_restore(),
             Action::StartVerification => self.start_verification(),
             Action::StartVerificationDiscoverable => self.start_verification_discoverable(),
             Action::DismissVerificationPrompt => self.dismiss_verification_prompt(),
