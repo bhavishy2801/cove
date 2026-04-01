@@ -612,29 +612,6 @@ pub(super) fn convert_cloud_secret(secret: &CloudWalletSecret) -> LocalWalletSec
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn all_local_wallets_from_returns_error_when_any_bucket_fails() {
-        let error = all_local_wallets_from(|network, mode| {
-            if network == Network::Testnet && mode == LocalWalletMode::Decoy {
-                return Err(CloudBackupError::Internal(
-                    "read wallets for test bucket failed".into(),
-                ));
-            }
-
-            Ok(vec![WalletMetadata::preview_new()])
-        })
-        .unwrap_err();
-
-        assert!(
-            matches!(error, CloudBackupError::Internal(message) if message == "read wallets for test bucket failed")
-        );
-    }
-}
-
 pub(super) fn build_wallet_entry(
     metadata: &crate::wallet::metadata::WalletMetadata,
     mode: LocalWalletMode,
@@ -721,4 +698,27 @@ pub(super) fn build_wallet_entry(
         xpub,
         wallet_mode,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_local_wallets_from_returns_error_when_any_bucket_fails() {
+        let error = all_local_wallets_from(|network, mode| {
+            if network == Network::Testnet && mode == LocalWalletMode::Decoy {
+                return Err(CloudBackupError::Internal(
+                    "read wallets for test bucket failed".into(),
+                ));
+            }
+
+            Ok(vec![WalletMetadata::preview_new()])
+        })
+        .unwrap_err();
+
+        assert!(
+            matches!(error, CloudBackupError::Internal(message) if message == "read wallets for test bucket failed")
+        );
+    }
 }

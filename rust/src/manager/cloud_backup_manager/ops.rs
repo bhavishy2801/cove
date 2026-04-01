@@ -762,6 +762,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
 
+    use cove_cspp::CsppStore;
     use cove_device::cloud_storage::{CloudStorage, CloudStorageAccess, CloudStorageError};
     use cove_device::keychain::{
         CSPP_CREDENTIAL_ID_KEY, CSPP_NAMESPACE_ID_KEY, CSPP_PRF_SALT_KEY, Keychain, KeychainAccess,
@@ -799,6 +800,8 @@ mod tests {
             self.0.entries.lock().unwrap().remove(&key).is_some()
         }
     }
+
+    type MockDiscoverResult = Result<(Vec<u8>, Vec<u8>), PasskeyError>;
 
     #[derive(Debug, Clone, Default)]
     struct MockKeychain {
@@ -920,7 +923,7 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct MockPasskeyProviderImpl {
-        discover_result: Arc<Mutex<Result<(Vec<u8>, Vec<u8>), PasskeyError>>>,
+        discover_result: Arc<Mutex<MockDiscoverResult>>,
     }
 
     impl Default for MockPasskeyProviderImpl {

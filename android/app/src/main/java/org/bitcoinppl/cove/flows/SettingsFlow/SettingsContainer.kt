@@ -100,6 +100,12 @@ fun SettingsContainer(
                         modifier = modifier,
                     )
                 }
+                is SettingsRoute.CloudBackup -> {
+                    MainSettingsScreen(
+                        app = app,
+                        modifier = modifier,
+                    )
+                }
             }
         }
     }

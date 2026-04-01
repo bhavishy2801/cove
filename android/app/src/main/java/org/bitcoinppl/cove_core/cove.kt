@@ -3449,7 +3449,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_cove_checksum_func_cancel_bootstrap() != 59164.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_cove_checksum_func_reset_bootstrap_for_restore() != 29473.toShort()) {
+    if (lib.uniffi_cove_checksum_func_reset_bootstrap_for_restore() != 45489.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_cove_checksum_func_root_data_dir_path() != 42460.toShort()) {
@@ -34029,6 +34029,15 @@ sealed class CloudOnlyState {
         companion object
     }
     
+    data class Failed(
+        val `error`: kotlin.String) : CloudOnlyState()
+        
+    {
+        
+
+        companion object
+    }
+    
 
     
 
@@ -34049,6 +34058,9 @@ public object FfiConverterTypeCloudOnlyState : FfiConverterRustBuffer<CloudOnlyS
             2 -> CloudOnlyState.Loading
             3 -> CloudOnlyState.Loaded(
                 FfiConverterSequenceTypeCloudBackupWalletItem.read(buf),
+                )
+            4 -> CloudOnlyState.Failed(
+                FfiConverterString.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
@@ -34074,6 +34086,13 @@ public object FfiConverterTypeCloudOnlyState : FfiConverterRustBuffer<CloudOnlyS
                 + FfiConverterSequenceTypeCloudBackupWalletItem.allocationSize(value.`wallets`)
             )
         }
+        is CloudOnlyState.Failed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`error`)
+            )
+        }
     }
 
     override fun write(value: CloudOnlyState, buf: ByteBuffer) {
@@ -34089,6 +34108,11 @@ public object FfiConverterTypeCloudOnlyState : FfiConverterRustBuffer<CloudOnlyS
             is CloudOnlyState.Loaded -> {
                 buf.putInt(3)
                 FfiConverterSequenceTypeCloudBackupWalletItem.write(value.`wallets`, buf)
+                Unit
+            }
+            is CloudOnlyState.Failed -> {
+                buf.putInt(4)
+                FfiConverterString.write(value.`error`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -52779,10 +52803,12 @@ object UrExceptionExternalErrorHandler : UniffiRustCallStatusErrorHandler<UrExce
     
 
         /**
-         * Reset all bootstrap state so restore can re-run bootstrap with a new key
+         * Reset bootstrap progress so recovery flows can re-run bootstrap
          *
-         * Clears encryption key cache, bootstrap step, storage bootstrapped flag,
-         * and cancellation flag. Must be called before re-running bootstrap after restore
+         * Clears the bootstrap step, storage bootstrapped flag, cancellation flag,
+         * active migration, and cached CSPP master key. This does not rotate the
+         * local database encryption key, which is expected to remain stable across
+         * restore and re-bootstrap flows
          */ fun `resetBootstrapForRestore`()
         = 
     uniffiRustCall() { _status ->

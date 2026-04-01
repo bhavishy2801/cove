@@ -34006,10 +34006,12 @@ public func cancelBootstrap()  {try! rustCall() {
 }
 }
 /**
- * Reset all bootstrap state so restore can re-run bootstrap with a new key
+ * Reset bootstrap progress so recovery flows can re-run bootstrap
  *
- * Clears encryption key cache, bootstrap step, storage bootstrapped flag,
- * and cancellation flag. Must be called before re-running bootstrap after restore
+ * Clears the bootstrap step, storage bootstrapped flag, cancellation flag,
+ * active migration, and cached CSPP master key. This does not rotate the
+ * local database encryption key, which is expected to remain stable across
+ * restore and re-bootstrap flows
  */
 public func resetBootstrapForRestore()  {try! rustCall() {
     uniffi_cove_fn_func_reset_bootstrap_for_restore($0
@@ -34345,7 +34347,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_cove_checksum_func_cancel_bootstrap() != 59164) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_cove_checksum_func_reset_bootstrap_for_restore() != 29473) {
+    if (uniffi_cove_checksum_func_reset_bootstrap_for_restore() != 45489) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_func_root_data_dir_path() != 42460) {
