@@ -508,6 +508,7 @@ fn create_new_prf_key_for_wrapper_repair(
 
 fn map_wrapper_repair_passkey_error(error: PasskeyError) -> CloudBackupError {
     match error {
+        PasskeyError::PrfUnsupportedProvider => CloudBackupError::UnsupportedPasskeyProvider,
         PasskeyError::UserCancelled => {
             info!("User cancelled new passkey flow for wrapper repair");
             CloudBackupError::PasskeyDiscoveryCancelled
@@ -518,6 +519,7 @@ fn map_wrapper_repair_passkey_error(error: PasskeyError) -> CloudBackupError {
 
 fn map_enable_passkey_error(error: PasskeyError) -> CloudBackupError {
     match error {
+        PasskeyError::PrfUnsupportedProvider => CloudBackupError::UnsupportedPasskeyProvider,
         PasskeyError::UserCancelled => {
             info!("User cancelled new passkey flow for cloud backup enable");
             CloudBackupError::PasskeyDiscoveryCancelled

@@ -342,6 +342,34 @@ struct MainSettingsScreen: View {
                     .onTapGesture {
                         app.pushRoute(Route.settings(.cloudBackup))
                     }
+                case .unsupportedPasskeyProvider:
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.shield.fill")
+                            .foregroundStyle(.red)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Supported Password Manager Required")
+                                .foregroundStyle(.red)
+                                .fontWeight(.semibold)
+                                .lineLimit(1)
+
+                            Text("Use Apple Passwords, 1Password, or Bitwarden")
+                                .font(.caption2)
+                                .foregroundStyle(.red.opacity(0.5))
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .foregroundColor(Color(UIColor.tertiaryLabel))
+                            .font(.footnote)
+                            .fontWeight(.semibold)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        app.pushRoute(Route.settings(.cloudBackup))
+                    }
                 case .restoring:
                     HStack {
                         ProgressView()

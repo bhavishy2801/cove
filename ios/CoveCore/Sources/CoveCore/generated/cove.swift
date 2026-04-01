@@ -18340,6 +18340,7 @@ public enum CloudBackupStatus: Equatable, Hashable {
     case restoring
     case enabled
     case passkeyMissing
+    case unsupportedPasskeyProvider
     case error(String
     )
 
@@ -18373,7 +18374,9 @@ public struct FfiConverterTypeCloudBackupStatus: FfiConverterRustBuffer {
         
         case 5: return .passkeyMissing
         
-        case 6: return .error(try FfiConverterString.read(from: &buf)
+        case 6: return .unsupportedPasskeyProvider
+        
+        case 7: return .error(try FfiConverterString.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -18404,8 +18407,12 @@ public struct FfiConverterTypeCloudBackupStatus: FfiConverterRustBuffer {
             writeInt(&buf, Int32(5))
         
         
-        case let .error(v1):
+        case .unsupportedPasskeyProvider:
             writeInt(&buf, Int32(6))
+        
+        
+        case let .error(v1):
+            writeInt(&buf, Int32(7))
             FfiConverterString.write(v1, into: &buf)
             
         }

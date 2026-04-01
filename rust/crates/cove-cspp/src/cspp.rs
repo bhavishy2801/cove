@@ -17,16 +17,19 @@ static INIT_LOCK: Mutex<()> = Mutex::new(());
 static MASTER_KEY_CACHE: LazyLock<ArcSwapOption<Zeroizing<[u8; 32]>>> =
     LazyLock::new(|| ArcSwapOption::new(None));
 
-/// Clear the cached master key so the next `get_or_create_master_key()` reloads from the store
-pub fn reset_master_key_cache() {
-    MASTER_KEY_CACHE.store(None);
-}
-
 pub struct Cspp<S: CsppStore>(S);
 
 impl<S: CsppStore> Cspp<S> {
     pub fn new(store: S) -> Self {
         Self(store)
+    }
+
+    /// Clears the process-local cache without modifying persisted key material
+    ///
+    /// Used by bootstrap and debug reset flows that need to drop in-memory state
+    /// across runtime transitions
+    pub fn clear_cached_master_key() {
+        MASTER_KEY_CACHE.store(None);
     }
 
     /// Loads the master key from the store, or generates and saves a new one
@@ -50,7 +53,7 @@ impl<S: CsppStore> Cspp<S> {
         // try loading from store
         if let Some(key) = self.get_master_key()? {
             info!("Master key loaded from keychain");
-            MASTER_KEY_CACHE.store(Some(Arc::new(Zeroizing::new(*key.as_bytes()))));
+            Self::update_cached_master_key(&key);
             return Ok(key);
         }
 
@@ -58,7 +61,6 @@ impl<S: CsppStore> Cspp<S> {
         warn!("Master key not found in keychain, generating new key");
         let key = MasterKey::generate();
         self.save_master_key(&key)?;
-        MASTER_KEY_CACHE.store(Some(Arc::new(Zeroizing::new(*key.as_bytes()))));
 
         Ok(key)
     }
@@ -82,6 +84,7 @@ impl<S: CsppStore> Cspp<S> {
             .map_err_str(CsppError::Save)?;
 
         self.0.save(MASTER_KEY_NAME.into(), encrypted).map_err_str(CsppError::Save)?;
+        Self::update_cached_master_key(master_key);
 
         Ok(())
     }
@@ -100,6 +103,7 @@ impl<S: CsppStore> Cspp<S> {
     pub fn delete_master_key(&self) {
         self.0.delete(MASTER_KEY_NAME.into());
         self.0.delete(MASTER_KEY_ENCRYPTION_KEY_AND_NONCE.into());
+        Self::clear_cached_master_key();
     }
 
     /// Checks whether the master key exists in the store without decrypting it
@@ -139,6 +143,10 @@ impl<S: CsppStore> Cspp<S> {
 
         Ok(Some(MasterKey::from_bytes(bytes)))
     }
+
+    fn update_cached_master_key(master_key: &MasterKey) {
+        MASTER_KEY_CACHE.store(Some(Arc::new(Zeroizing::new(*master_key.as_bytes()))));
+    }
 }
 
 #[cfg(test)]
@@ -162,7 +170,7 @@ mod tests {
 
     impl Cspp<MockStore> {
         fn reset_cache() {
-            MASTER_KEY_CACHE.store(None);
+            Self::clear_cached_master_key();
         }
     }
 
@@ -250,8 +258,8 @@ mod tests {
         // verify cache is populated
         assert!(MASTER_KEY_CACHE.load().is_some());
 
-        // reset cache via public API
-        reset_master_key_cache();
+        // reset cache via runtime-reset API
+        Cspp::<MockStore>::clear_cached_master_key();
 
         // verify cache is cleared
         assert!(MASTER_KEY_CACHE.load().is_none());
@@ -259,5 +267,37 @@ mod tests {
         // next call should reload from store (same key since store still has it)
         let reloaded = cspp.get_or_create_master_key().unwrap();
         assert_eq!(*reloaded.as_bytes(), first_bytes);
+    }
+
+    #[test]
+    fn save_master_key_refreshes_warm_cache() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap();
+        Cspp::<MockStore>::reset_cache();
+
+        let cspp = mock_cspp();
+        let original = cspp.get_or_create_master_key().unwrap();
+        let replacement = MasterKey::generate();
+
+        assert_ne!(original.as_bytes(), replacement.as_bytes());
+
+        cspp.save_master_key(&replacement).unwrap();
+
+        let loaded = cspp.get_or_create_master_key().unwrap();
+        assert_eq!(loaded.as_bytes(), replacement.as_bytes());
+    }
+
+    #[test]
+    fn delete_master_key_clears_warm_cache() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap();
+        Cspp::<MockStore>::reset_cache();
+
+        let cspp = mock_cspp();
+        let original = cspp.get_or_create_master_key().unwrap();
+        cspp.delete_master_key();
+
+        assert!(MASTER_KEY_CACHE.load().is_none());
+
+        let regenerated = cspp.get_or_create_master_key().unwrap();
+        assert_ne!(regenerated.as_bytes(), original.as_bytes());
     }
 }

@@ -349,7 +349,6 @@ impl RustCloudBackupManager {
             .map_err_prefix("save cspp credentials", CloudBackupError::Internal)?;
         cspp.save_master_key(&master_key)
             .map_err_prefix("save recovered master key", CloudBackupError::Internal)?;
-        cove_cspp::reset_master_key_cache();
 
         info!("Recovered local master key from cloud");
         Ok(master_key)

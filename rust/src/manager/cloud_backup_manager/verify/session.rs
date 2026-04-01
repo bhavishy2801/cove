@@ -252,7 +252,6 @@ impl<'a> VerificationSession<'a> {
                 self.cspp
                     .save_master_key(&master_key)
                     .map_err_prefix("repair local master key", CloudBackupError::Internal)?;
-                cove_cspp::reset_master_key_cache();
                 self.report.local_master_key_repaired = true;
                 info!("Repaired local master key from cloud");
             }
@@ -260,7 +259,6 @@ impl<'a> VerificationSession<'a> {
                 self.cspp
                     .save_master_key(&master_key)
                     .map_err_prefix("repair local master key", CloudBackupError::Internal)?;
-                cove_cspp::reset_master_key_cache();
                 self.report.local_master_key_repaired = true;
                 info!("Repaired local master key to match cloud");
             }

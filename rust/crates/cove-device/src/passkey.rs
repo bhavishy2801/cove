@@ -9,6 +9,9 @@ pub enum PasskeyError {
     #[error("not supported: {0}")]
     NotSupported(String),
 
+    #[error("passkey provider does not support PRF")]
+    PrfUnsupportedProvider,
+
     #[error("user cancelled")]
     UserCancelled,
 

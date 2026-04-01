@@ -48,6 +48,7 @@ pub enum CloudBackupStatus {
     Restoring,
     Enabled,
     PasskeyMissing,
+    UnsupportedPasskeyProvider,
     Error(String),
 }
 
@@ -274,6 +275,9 @@ pub(crate) enum CloudBackupError {
     #[error("not supported: {0}")]
     NotSupported(String),
 
+    #[error("passkey provider does not support PRF for Cloud Backup")]
+    UnsupportedPasskeyProvider,
+
     #[error("{0}")]
     RecoveryRequired(String),
 
@@ -330,6 +334,15 @@ impl RustCloudBackupManager {
                 CloudBackupStatus::Enabled
             }
             PersistedCloudBackupStatus::PasskeyMissing => CloudBackupStatus::PasskeyMissing,
+        }
+    }
+
+    pub(crate) fn status_for_operation_error(error: &CloudBackupError) -> CloudBackupStatus {
+        match error {
+            CloudBackupError::UnsupportedPasskeyProvider => {
+                CloudBackupStatus::UnsupportedPasskeyProvider
+            }
+            other => CloudBackupStatus::Error(other.to_string()),
         }
     }
 
@@ -645,7 +658,7 @@ impl RustCloudBackupManager {
                 error!("{operation_name} failed: {error}");
                 self.set_progress(None);
                 self.set_restore_progress(None);
-                self.set_status(CloudBackupStatus::Error(error.to_string()));
+                self.set_status(Self::status_for_operation_error(&error));
             }
         });
     }
@@ -754,7 +767,6 @@ impl RustCloudBackupManager {
         // also delete the master key so next enable starts clean
         let cspp = cove_cspp::Cspp::new(keychain.clone());
         cspp.delete_master_key();
-        cove_cspp::reset_master_key_cache();
 
         let db = Database::global();
         let _ = db.cloud_backup_state.delete();
@@ -869,7 +881,7 @@ impl RustCloudBackupManager {
                     error!("restore_from_cloud_backup failed: {error}");
                     this.set_progress(None);
                     this.set_restore_progress(None);
-                    this.set_status(CloudBackupStatus::Error(error.to_string()));
+                    this.set_status(Self::status_for_operation_error(&error));
                 }
             }
         });
@@ -1135,6 +1147,16 @@ mod tests {
         let state = manager.state.read();
         assert!(state.restore_progress.is_none());
         assert_eq!(state.restore_report, Some(report));
+    }
+
+    #[test]
+    fn unsupported_passkey_provider_maps_to_typed_status() {
+        assert_eq!(
+            RustCloudBackupManager::status_for_operation_error(
+                &CloudBackupError::UnsupportedPasskeyProvider,
+            ),
+            CloudBackupStatus::UnsupportedPasskeyProvider,
+        );
     }
 
     #[test]

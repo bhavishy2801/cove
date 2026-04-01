@@ -153,7 +153,7 @@ pub fn reset_bootstrap_for_restore() {
     *BOOTSTRAP_STEP.lock() = BootstrapStep::NotStarted;
     STORAGE_BOOTSTRAPPED.store(false, Ordering::Release);
     BOOTSTRAP_CANCELLED.store(false, Ordering::Release);
-    cove_cspp::reset_master_key_cache();
+    cove_cspp::Cspp::<cove_device::keychain::Keychain>::clear_cached_master_key();
     migration::set_active_migration(None);
     info!("Bootstrap state reset for restore");
 }

@@ -28,6 +28,8 @@ const CLOUD_ONLY_FETCH_RECOVERY_MESSAGE: &str =
     "Cloud backup needs verification before wallets not on this device can be loaded";
 const CLOUD_ONLY_RESTORE_RECOVERY_MESSAGE: &str =
     "Cloud backup needs verification before this wallet can be restored";
+const RECREATE_MANIFEST_RECOVERY_MESSAGE: &str =
+    "Cloud backup needs verification before the backup index can be recreated";
 
 impl RustCloudBackupManager {
     fn send_restore_progress(
@@ -191,9 +193,12 @@ impl RustCloudBackupManager {
 
         let namespace = self.current_namespace_id()?;
         let cspp = cove_cspp::Cspp::new(Keychain::global().clone());
-        let master_key = cspp
-            .get_or_create_master_key()
-            .map_err_prefix("master key", CloudBackupError::Internal)?;
+        let master_key = load_master_key_for_cloud_action(&cspp, || {
+            self.recover_local_master_key_from_cloud_without_discovery(
+                &namespace,
+                RECREATE_MANIFEST_RECOVERY_MESSAGE,
+            )
+        })?;
 
         let critical_key = Zeroizing::new(master_key.critical_data_key());
         let cloud = CloudStorage::global();
@@ -293,7 +298,6 @@ impl RustCloudBackupManager {
 
         cspp.save_master_key(&matched.master_key)
             .map_err_prefix("save recovered master key", CloudBackupError::Internal)?;
-        cove_cspp::reset_master_key_cache();
 
         let critical_key = Zeroizing::new(matched.master_key.critical_data_key());
         let db = Database::global();
@@ -459,7 +463,6 @@ impl RustCloudBackupManager {
                 self.ensure_current_restore_operation(operation_id)?;
                 cspp.save_master_key(&matched.master_key)
                     .map_err_prefix("save master key", CloudBackupError::Internal)?;
-                cove_cspp::reset_master_key_cache();
 
                 self.ensure_current_restore_operation(operation_id)?;
                 keychain
@@ -1010,7 +1013,7 @@ mod tests {
             self.keychain.reset();
             self.cloud.reset();
             self.passkey.reset();
-            cove_cspp::reset_master_key_cache();
+            cove_cspp::Cspp::<Keychain>::clear_cached_master_key();
         }
     }
 
@@ -1096,5 +1099,25 @@ mod tests {
         assert!(keychain.get(CSPP_CREDENTIAL_ID_KEY.into()).is_none());
         assert!(keychain.get(CSPP_PRF_SALT_KEY.into()).is_none());
         assert!(keychain.get(CSPP_NAMESPACE_ID_KEY.into()).is_none());
+    }
+
+    #[test]
+    fn reupload_all_wallets_does_not_create_master_key_for_existing_namespace() {
+        let globals = test_globals();
+        globals.reset();
+
+        Keychain::global().save(CSPP_NAMESPACE_ID_KEY.into(), "existing-namespace".into()).unwrap();
+
+        let manager = RustCloudBackupManager::init();
+        let error = manager.do_reupload_all_wallets().unwrap_err();
+
+        assert!(matches!(
+            error,
+            CloudBackupError::RecoveryRequired(message)
+                if message == RECREATE_MANIFEST_RECOVERY_MESSAGE
+        ));
+
+        let cspp = cove_cspp::Cspp::new(Keychain::global().clone());
+        assert!(cspp.load_master_key_from_store().unwrap().is_none());
     }
 }

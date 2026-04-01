@@ -52,10 +52,16 @@ final class PasskeyProviderImpl: PasskeyProvider, @unchecked Sendable {
             throw PasskeyError.CreationFailed("unexpected credential type")
         }
 
-        if let prfOutput = registration.prf {
-            Log.info("[PASSKEY] registration PRF supported: \(prfOutput.isSupported)")
-        } else {
-            Log.warn("[PASSKEY] registration PRF output is nil — PRF may not work")
+        guard let prfOutput = registration.prf else {
+            Log.warn("[PASSKEY] registration PRF output is nil")
+            throw PasskeyError.PrfUnsupportedProvider
+        }
+
+        Log.info("[PASSKEY] registration PRF supported: \(prfOutput.isSupported)")
+
+        guard prfOutput.isSupported else {
+            Log.warn("[PASSKEY] registration PRF is unsupported by this passkey provider")
+            throw PasskeyError.PrfUnsupportedProvider
         }
 
         return registration.credentialID

@@ -1389,6 +1389,7 @@ enum PasskeyError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     
     case NotSupported(String
     )
+    case PrfUnsupportedProvider
     case UserCancelled
     case CreationFailed(String
     )
@@ -1437,14 +1438,15 @@ public struct FfiConverterTypePasskeyError: FfiConverterRustBuffer {
         case 1: return .NotSupported(
             try FfiConverterString.read(from: &buf)
             )
-        case 2: return .UserCancelled
-        case 3: return .CreationFailed(
+        case 2: return .PrfUnsupportedProvider
+        case 3: return .UserCancelled
+        case 4: return .CreationFailed(
             try FfiConverterString.read(from: &buf)
             )
-        case 4: return .AuthenticationFailed(
+        case 5: return .AuthenticationFailed(
             try FfiConverterString.read(from: &buf)
             )
-        case 5: return .NoCredentialFound
+        case 6: return .NoCredentialFound
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -1462,22 +1464,26 @@ public struct FfiConverterTypePasskeyError: FfiConverterRustBuffer {
             FfiConverterString.write(v1, into: &buf)
             
         
-        case .UserCancelled:
+        case .PrfUnsupportedProvider:
             writeInt(&buf, Int32(2))
         
         
-        case let .CreationFailed(v1):
+        case .UserCancelled:
             writeInt(&buf, Int32(3))
-            FfiConverterString.write(v1, into: &buf)
-            
         
-        case let .AuthenticationFailed(v1):
+        
+        case let .CreationFailed(v1):
             writeInt(&buf, Int32(4))
             FfiConverterString.write(v1, into: &buf)
             
         
-        case .NoCredentialFound:
+        case let .AuthenticationFailed(v1):
             writeInt(&buf, Int32(5))
+            FfiConverterString.write(v1, into: &buf)
+            
+        
+        case .NoCredentialFound:
+            writeInt(&buf, Int32(6))
         
         }
     }

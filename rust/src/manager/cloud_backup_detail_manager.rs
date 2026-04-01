@@ -206,6 +206,12 @@ impl RustCloudBackupManager {
                 self.set_recovery(RecoveryState::Idle);
                 self.handle_start_verification(false);
             }
+            Err(CloudBackupError::UnsupportedPasskeyProvider) => {
+                self.set_recovery(RecoveryState::Idle);
+                self.set_status(RustCloudBackupManager::status_for_operation_error(
+                    &CloudBackupError::UnsupportedPasskeyProvider,
+                ));
+            }
             Err(error) => {
                 self.set_recovery(RecoveryState::Failed { action, error: error.to_string() });
             }
@@ -237,6 +243,12 @@ impl RustCloudBackupManager {
             Err(CloudBackupError::PasskeyDiscoveryCancelled) => {
                 self.set_recovery(RecoveryState::Idle);
                 self.send(CloudBackupReconcileMessage::PasskeyDiscoveryCancelled);
+            }
+            Err(CloudBackupError::UnsupportedPasskeyProvider) => {
+                self.set_recovery(RecoveryState::Idle);
+                self.set_status(RustCloudBackupManager::status_for_operation_error(
+                    &CloudBackupError::UnsupportedPasskeyProvider,
+                ));
             }
             Err(error) => {
                 self.set_recovery(RecoveryState::Failed {

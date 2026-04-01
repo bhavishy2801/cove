@@ -29,13 +29,20 @@ struct CloudBackupDetailScreen: View {
         return false
     }
 
+    private var isUnsupportedPasskeyProvider: Bool {
+        if case .unsupportedPasskeyProvider = manager.status { return true }
+        return false
+    }
+
     private var shouldShowLoadingState: Bool {
         manager.detail == nil && !isVerifying && !hasVerificationResult && !isCancelled
     }
 
     var body: some View {
         Form {
-            if isPasskeyMissing {
+            if isUnsupportedPasskeyProvider {
+                UnsupportedPasskeyProviderContent(manager: manager)
+            } else if isPasskeyMissing {
                 MissingPasskeyContent(manager: manager)
             } else {
                 if isVerifying, !hasVerificationResult {
@@ -77,7 +84,7 @@ struct CloudBackupDetailScreen: View {
         .navigationTitle("Cloud Backup")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            guard !isPasskeyMissing else { return }
+            guard !isPasskeyMissing, !isUnsupportedPasskeyProvider else { return }
 
             refreshSyncHealth()
             manager.dispatch(action: .refreshDetail)
@@ -139,5 +146,52 @@ struct CloudBackupDetailScreen: View {
 
     private func refreshSyncHealth() {
         syncHealth = ICloudDriveHelper.shared.overallSyncHealth()
+    }
+}
+
+struct UnsupportedPasskeyProviderContent: View {
+    @Environment(\.dismiss) private var dismiss
+    let manager: CloudBackupManager
+
+    var body: some View {
+        Section {
+            VStack(spacing: 12) {
+                Image(systemName: "exclamationmark.shield.fill")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.red)
+
+                Text("Passkey Not Supported for Cloud Backup")
+                    .font(.headline)
+                    .foregroundStyle(.red)
+
+                Text(
+                    "This passkey provider can't create the secure passkey required for Cloud Backup. No cloud backup was enabled from this attempt."
+                )
+                .font(.subheadline)
+                .foregroundStyle(.red.opacity(0.85))
+                .multilineTextAlignment(.center)
+
+                Text(
+                    "Try again with a supported password manager on iOS such as Apple Passwords, 1Password, or Bitwarden."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        }
+
+        Section {
+            Button {
+                manager.dispatch(action: .enableCloudBackupNoDiscovery)
+            } label: {
+                Label("Try Again", systemImage: "arrow.clockwise")
+            }
+
+            Button("Back", role: .cancel) {
+                dismiss()
+            }
+        }
     }
 }
