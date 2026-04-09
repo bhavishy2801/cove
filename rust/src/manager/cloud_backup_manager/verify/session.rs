@@ -61,7 +61,7 @@ impl<'a> VerificationSession<'a> {
             .map_err_prefix("load local master key", CloudBackupError::Internal)?;
 
         Ok(Self {
-            manager: manager.clone(),
+            manager,
             keychain,
             cspp,
             cloud: CloudStorage::global().clone(),

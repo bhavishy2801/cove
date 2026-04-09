@@ -78,6 +78,7 @@ import org.bitcoinppl.cove.nfc.TapCardNfcManager
 import org.bitcoinppl.cove.sidebar.SidebarContainer
 import org.bitcoinppl.cove.ui.theme.CoveTheme
 import org.bitcoinppl.cove.views.LockView
+import org.bitcoinppl.cove_core.RustCloudBackupManager
 import org.bitcoinppl.cove.views.TermsAndConditionsSheet
 import org.bitcoinppl.cove_core.bootstrap
 import org.bitcoinppl.cove_core.activeMigration

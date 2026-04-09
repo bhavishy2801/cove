@@ -513,6 +513,9 @@ impl RustCloudBackupManager {
     }
 
     fn init() -> Arc<Self> {
+        #[cfg(test)]
+        ensure_cloud_backup_test_tokio_runtime();
+
         let (sender, receiver) = flume::bounded(1000);
 
         Self {
@@ -1621,6 +1624,30 @@ pub(crate) fn cloud_backup_test_lock() -> &'static parking_lot::Mutex<()> {
 }
 
 #[cfg(test)]
+pub(crate) fn ensure_cloud_backup_test_tokio_runtime() {
+    static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    INIT.get_or_init(|| {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("cloud-backup-test-tokio".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("create cloud backup test tokio runtime");
+
+                runtime.block_on(async move {
+                    cove_tokio::init();
+                    sender.send(()).expect("signal cloud backup test tokio runtime");
+                    std::future::pending::<()>().await;
+                });
+            })
+            .expect("spawn cloud backup test tokio runtime thread");
+        receiver.recv().expect("wait for cloud backup test tokio runtime");
+    });
+}
+
+#[cfg(test)]
 impl RustCloudBackupManager {
     pub(crate) fn run_wallet_upload_for_test(&self, wallet_id: WalletId) {
         self.run_wallet_upload(wallet_id);
@@ -1630,6 +1657,16 @@ impl RustCloudBackupManager {
         self.wallet_upload_debouncers.lock().clear();
         self.wallet_upload_retry_counts.lock().clear();
         self.active_wallet_uploads.lock().clear();
+    }
+
+    pub(crate) fn has_wallet_upload_debouncer_for_test(&self, wallet_id: WalletId) -> bool {
+        let runtime = self.runtime.clone();
+        std::thread::spawn(move || {
+            cove_tokio::task::block_on(call!(runtime.has_upload_debouncer_for_test(wallet_id)))
+                .expect("check upload debouncer")
+        })
+        .join()
+        .expect("check upload debouncer thread")
     }
 }
 

@@ -31,6 +31,11 @@ const RECREATE_MANIFEST_RECOVERY_MESSAGE: &str =
     "Cloud backup needs verification before the backup index can be recreated";
 const UNSUPPORTED_CLOUD_ONLY_WALLET_NAME: &str = "Unsupported wallet backup";
 
+enum FinalizeUploadStateMode {
+    PreserveVerification,
+    ResetVerification,
+}
+
 impl RustCloudBackupManager {
     fn clear_enable_progress(&self, status: CloudBackupStatus) {
         self.set_progress(None);
@@ -70,14 +75,21 @@ impl RustCloudBackupManager {
         cloud: &CloudStorage,
         namespace_id: &str,
         uploaded_wallets: Vec<super::wallets::PreparedWalletBackup>,
-        persist_state: impl FnOnce(&Database, u32) -> Result<(), CloudBackupError>,
+        state_mode: FinalizeUploadStateMode,
     ) -> Result<(), CloudBackupError> {
         let db = Database::global();
         let wallet_count = cloud
             .list_wallet_backups(namespace_id.to_owned())
             .map(|ids| ids.len() as u32)
             .unwrap_or(uploaded_wallets.len() as u32);
-        persist_state(&db, wallet_count)?;
+        match state_mode {
+            FinalizeUploadStateMode::PreserveVerification => {
+                persist_enabled_cloud_backup_state(&db, wallet_count)?;
+            }
+            FinalizeUploadStateMode::ResetVerification => {
+                persist_enabled_cloud_backup_state_reset_verification(&db, wallet_count)?;
+            }
+        }
 
         let uploaded_at = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
         for wallet in uploaded_wallets {
@@ -284,9 +296,12 @@ impl RustCloudBackupManager {
         let uploaded_wallets =
             upload_all_wallets(cloud, &namespace, &critical_key, &Database::global())?;
 
-        self.finalize_uploaded_wallets(cloud, &namespace, uploaded_wallets, |db, wallet_count| {
-            persist_enabled_cloud_backup_state(db, wallet_count)
-        })?;
+        self.finalize_uploaded_wallets(
+            cloud,
+            &namespace,
+            uploaded_wallets,
+            FinalizeUploadStateMode::PreserveVerification,
+        )?;
 
         Ok(())
     }
@@ -388,9 +403,7 @@ impl RustCloudBackupManager {
             cloud,
             &matched.namespace_id,
             uploaded_wallets,
-            |db, wallet_count| {
-                persist_enabled_cloud_backup_state_reset_verification(db, wallet_count)
-            },
+            FinalizeUploadStateMode::ResetVerification,
         )?;
 
         self.clear_enable_progress(CloudBackupStatus::Enabled);
@@ -788,9 +801,7 @@ impl RustCloudBackupManager {
             cloud,
             &namespace_id,
             uploaded_wallets,
-            |db, wallet_count| {
-                persist_enabled_cloud_backup_state_reset_verification(db, wallet_count)
-            },
+            FinalizeUploadStateMode::ResetVerification,
         )?;
 
         self.clear_enable_progress(CloudBackupStatus::Enabled);
@@ -869,22 +880,6 @@ where
     }
 }
 
-#[cfg(test)]
-fn restore_from_local_master_key_fallback<S>(
-    cloud: &CloudStorage,
-    store: &S,
-    cspp: &cove_cspp::Cspp<S>,
-) -> Result<(cove_cspp::master_key::MasterKey, String), CloudBackupError>
-where
-    S: cove_cspp::CsppStore,
-    S::Error: std::fmt::Display,
-{
-    let (master_key, namespace_id) =
-        try_restore_from_local_master_key(cloud, cspp).ok_or(CloudBackupError::PasskeyMismatch)?;
-    persist_namespace_id(store, &namespace_id)?;
-    Ok((master_key, namespace_id))
-}
-
 pub(super) fn load_master_key_for_cloud_action<S, F>(
     cspp: &cove_cspp::Cspp<S>,
     recover_missing: F,
@@ -903,35 +898,29 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-    use std::sync::{Arc, OnceLock};
-    use std::time::Duration;
+#[path = "ops/test_support.rs"]
+mod test_support;
 
-    use bip39::Mnemonic;
+#[cfg(test)]
+mod tests {
     use cove_cspp::CsppStore;
     use cove_cspp::backup_data::{
         WalletEntry, WalletMode as CloudWalletMode, WalletSecret, wallet_filename_from_record_id,
         wallet_record_id,
     };
-    use cove_device::cloud_storage::{CloudStorage, CloudStorageAccess, CloudStorageError};
+    use cove_device::cloud_storage::{CloudStorage, CloudStorageAccess};
     use cove_device::keychain::{
-        CSPP_CREDENTIAL_ID_KEY, CSPP_NAMESPACE_ID_KEY, CSPP_PRF_SALT_KEY, Keychain, KeychainAccess,
+        CSPP_CREDENTIAL_ID_KEY, CSPP_NAMESPACE_ID_KEY, CSPP_PRF_SALT_KEY, Keychain,
     };
-    use cove_device::passkey::{
-        DiscoveredPasskeyResult, PasskeyAccess, PasskeyCredentialPresence, PasskeyError,
-        PasskeyProvider,
-    };
-    use parking_lot::Mutex;
-    use sha2::Digest as _;
-    use strum::IntoEnumIterator as _;
+    use cove_device::passkey::{DiscoveredPasskeyResult, PasskeyAccess, PasskeyError};
 
+    use super::test_support::*;
     use super::*;
     use crate::database::Database;
     use crate::database::cloud_backup::{
         CloudBlobDirtyState, CloudBlobFailedState, CloudBlobUploadedPendingConfirmationState,
-        CloudBlobUploadingState, CloudUploadKind, PersistedCloudBackupState,
-        PersistedCloudBackupStatus, PersistedCloudBlobState, PersistedCloudBlobSyncState,
+        CloudUploadKind, PersistedCloudBackupState, PersistedCloudBackupStatus,
+        PersistedCloudBlobState, PersistedCloudBlobSyncState,
     };
     use crate::label_manager::LabelManager;
     use crate::manager::cloud_backup_manager::{
@@ -939,717 +928,17 @@ mod tests {
         VerificationFailureKind, VerificationState,
     };
     use crate::manager::wallet_manager::RustWalletManager;
-    use crate::mnemonic::MnemonicExt as _;
     use crate::network::Network;
     use crate::wallet::{
         Wallet,
-        metadata::{WalletId, WalletMetadata, WalletMode, WalletType},
+        metadata::{WalletMode, WalletType},
     };
+    use bip39::Mnemonic;
 
-    #[derive(Debug, Default)]
-    struct MockStore {
-        entries: Mutex<HashMap<String, String>>,
-        save_count: Mutex<usize>,
-    }
-
-    #[derive(Debug, Clone)]
-    struct MockStoreHandle(Arc<MockStore>);
-
-    impl cove_cspp::CsppStore for MockStoreHandle {
-        type Error = String;
-
-        fn save(&self, key: String, value: String) -> Result<(), Self::Error> {
-            *self.0.save_count.lock() += 1;
-            self.0.entries.lock().insert(key, value);
-            Ok(())
+    mod cove_tokio {
+        pub(super) fn init() {
+            super::init_test_runtime();
         }
-
-        fn get(&self, key: String) -> Option<String> {
-            self.0.entries.lock().get(&key).cloned()
-        }
-
-        fn delete(&self, key: String) -> bool {
-            self.0.entries.lock().remove(&key).is_some()
-        }
-    }
-
-    type MockDiscoverResult = Result<(Vec<u8>, Vec<u8>), PasskeyError>;
-
-    #[derive(Debug, Clone, Default)]
-    struct MockKeychain {
-        entries: Arc<Mutex<HashMap<String, String>>>,
-    }
-
-    impl MockKeychain {
-        fn reset(&self) {
-            self.entries.lock().clear();
-        }
-    }
-
-    impl KeychainAccess for MockKeychain {
-        fn save(
-            &self,
-            key: String,
-            value: String,
-        ) -> Result<(), cove_device::keychain::KeychainError> {
-            self.entries.lock().insert(key, value);
-            Ok(())
-        }
-
-        fn get(&self, key: String) -> Option<String> {
-            self.entries.lock().get(&key).cloned()
-        }
-
-        fn delete(&self, key: String) -> bool {
-            self.entries.lock().remove(&key).is_some()
-        }
-    }
-
-    #[derive(Debug, Default)]
-    struct MockCloudState {
-        wallet_files: HashMap<String, Vec<String>>,
-        master_key_backups: HashMap<String, Vec<u8>>,
-        wallet_backups: HashMap<(String, String), Vec<u8>>,
-        wallet_backup_download_overrides: HashMap<(String, String), Vec<u8>>,
-        list_wallet_files_error: Option<CloudStorageError>,
-        upload_master_key_error: Option<CloudStorageError>,
-        next_upload_wallet_backup_error: Option<CloudStorageError>,
-        upload_wallet_backup_error: Option<CloudStorageError>,
-        reflect_uploaded_wallets_in_listing: bool,
-        uploaded_wallet_backups: Vec<(String, String)>,
-        wallet_backup_upload_attempts: usize,
-        dirty_wallet_on_next_upload: Option<WalletId>,
-        changed_wallet_on_next_upload: Option<WalletId>,
-        dirty_wallet_on_next_backup_check: Option<WalletId>,
-    }
-
-    #[derive(Debug, Clone, Default)]
-    struct MockCloudStorage {
-        state: Arc<Mutex<MockCloudState>>,
-    }
-
-    impl MockCloudStorage {
-        fn reset(&self) {
-            *self.state.lock() = MockCloudState::default();
-        }
-
-        fn set_wallet_files(&self, namespace: String, wallet_files: Vec<String>) {
-            self.state.lock().wallet_files.insert(namespace, wallet_files);
-        }
-
-        fn set_master_key_backup(&self, namespace: String, backup: Vec<u8>) {
-            self.state.lock().master_key_backups.insert(namespace, backup);
-        }
-
-        fn set_wallet_backup(&self, namespace: String, record_id: String, backup: Vec<u8>) {
-            self.state.lock().wallet_backups.insert((namespace, record_id), backup);
-        }
-
-        fn set_wallet_backup_download_override(
-            &self,
-            namespace: String,
-            record_id: String,
-            backup: Vec<u8>,
-        ) {
-            self.state
-                .lock()
-                .wallet_backup_download_overrides
-                .insert((namespace, record_id), backup);
-        }
-
-        fn fail_list_wallet_files(&self, message: &str) {
-            self.state.lock().list_wallet_files_error =
-                Some(CloudStorageError::DownloadFailed(message.into()));
-        }
-
-        fn clear_list_wallet_files_failure(&self) {
-            self.state.lock().list_wallet_files_error = None;
-        }
-
-        fn fail_master_key_upload(&self, message: &str) {
-            self.state.lock().upload_master_key_error =
-                Some(CloudStorageError::UploadFailed(message.into()));
-        }
-
-        fn fail_wallet_backup_upload(&self, message: &str) {
-            self.state.lock().upload_wallet_backup_error =
-                Some(CloudStorageError::UploadFailed(message.into()));
-        }
-
-        fn fail_wallet_backup_upload_quota_exceeded(&self) {
-            self.state.lock().upload_wallet_backup_error = Some(CloudStorageError::QuotaExceeded);
-        }
-
-        fn fail_next_wallet_backup_upload(&self, message: &str) {
-            self.state.lock().next_upload_wallet_backup_error =
-                Some(CloudStorageError::UploadFailed(message.into()));
-        }
-
-        fn clear_wallet_backup_upload_failure(&self) {
-            let mut state = self.state.lock();
-            state.next_upload_wallet_backup_error = None;
-            state.upload_wallet_backup_error = None;
-        }
-
-        fn set_reflect_uploaded_wallets_in_listing(&self, enabled: bool) {
-            self.state.lock().reflect_uploaded_wallets_in_listing = enabled;
-        }
-
-        fn uploaded_wallet_backup_count(&self) -> usize {
-            self.state.lock().uploaded_wallet_backups.len()
-        }
-
-        fn wallet_backup_upload_attempt_count(&self) -> usize {
-            self.state.lock().wallet_backup_upload_attempts
-        }
-
-        fn dirty_wallet_on_next_upload(&self, wallet_id: WalletId) {
-            self.state.lock().dirty_wallet_on_next_upload = Some(wallet_id);
-        }
-
-        fn change_wallet_on_next_upload(&self, wallet_id: WalletId) {
-            self.state.lock().changed_wallet_on_next_upload = Some(wallet_id);
-        }
-
-        fn dirty_wallet_on_next_backup_check(&self, wallet_id: WalletId) {
-            self.state.lock().dirty_wallet_on_next_backup_check = Some(wallet_id);
-        }
-    }
-
-    impl CloudStorageAccess for MockCloudStorage {
-        fn upload_master_key_backup(
-            &self,
-            _namespace: String,
-            _data: Vec<u8>,
-        ) -> Result<(), CloudStorageError> {
-            if let Some(error) = self.state.lock().upload_master_key_error.clone() {
-                return Err(error);
-            }
-
-            Ok(())
-        }
-
-        fn upload_wallet_backup(
-            &self,
-            namespace: String,
-            record_id: String,
-            data: Vec<u8>,
-        ) -> Result<(), CloudStorageError> {
-            let (dirty_wallet, changed_wallet) = {
-                let mut state = self.state.lock();
-                state.wallet_backup_upload_attempts += 1;
-                if let Some(error) = state.next_upload_wallet_backup_error.take() {
-                    return Err(error);
-                }
-
-                if let Some(error) = state.upload_wallet_backup_error.clone() {
-                    return Err(error);
-                }
-
-                let dirty_wallet = state.dirty_wallet_on_next_upload.take();
-                let changed_wallet = state.changed_wallet_on_next_upload.take();
-                state.wallet_backups.insert((namespace.clone(), record_id.clone()), data);
-                state.uploaded_wallet_backups.push((namespace, record_id));
-                (dirty_wallet, changed_wallet)
-            };
-            if let Some(wallet_id) = dirty_wallet {
-                persist_dirty_blob_state(wallet_id);
-            }
-            if let Some(wallet_id) = changed_wallet {
-                mutate_wallet_and_persist_dirty(wallet_id);
-            }
-            Ok(())
-        }
-
-        fn download_master_key_backup(
-            &self,
-            namespace: String,
-        ) -> Result<Vec<u8>, CloudStorageError> {
-            self.state
-                .lock()
-                .master_key_backups
-                .get(&namespace)
-                .cloned()
-                .ok_or(CloudStorageError::NotFound(namespace))
-        }
-
-        fn download_wallet_backup(
-            &self,
-            namespace: String,
-            record_id: String,
-        ) -> Result<Vec<u8>, CloudStorageError> {
-            let dirty_wallet = self.state.lock().dirty_wallet_on_next_backup_check.take();
-            if let Some(wallet_id) = dirty_wallet {
-                persist_dirty_blob_state(wallet_id);
-            }
-
-            let override_key = (namespace.clone(), record_id.clone());
-            if let Some(backup) =
-                self.state.lock().wallet_backup_download_overrides.get(&override_key).cloned()
-            {
-                return Ok(backup);
-            }
-
-            self.state
-                .lock()
-                .wallet_backups
-                .get(&(namespace.clone(), record_id.clone()))
-                .cloned()
-                .ok_or(CloudStorageError::NotFound(format!("{namespace}/{record_id}")))
-        }
-
-        fn delete_wallet_backup(
-            &self,
-            _namespace: String,
-            _record_id: String,
-        ) -> Result<(), CloudStorageError> {
-            Ok(())
-        }
-
-        fn list_namespaces(&self) -> Result<Vec<String>, CloudStorageError> {
-            Ok(self.state.lock().wallet_files.keys().cloned().collect())
-        }
-
-        fn list_wallet_files(&self, namespace: String) -> Result<Vec<String>, CloudStorageError> {
-            let state = self.state.lock();
-            if let Some(error) = state.list_wallet_files_error.clone() {
-                return Err(error);
-            }
-            let mut wallet_files = state.wallet_files.get(&namespace).cloned().unwrap_or_default();
-
-            if state.reflect_uploaded_wallets_in_listing {
-                for (uploaded_namespace, record_id) in &state.uploaded_wallet_backups {
-                    if uploaded_namespace == &namespace {
-                        let filename = wallet_filename_from_record_id(record_id);
-                        if !wallet_files.contains(&filename) {
-                            wallet_files.push(filename);
-                        }
-                    }
-                }
-            }
-
-            Ok(wallet_files)
-        }
-
-        fn is_backup_uploaded(
-            &self,
-            _namespace: String,
-            _record_id: String,
-        ) -> Result<bool, CloudStorageError> {
-            Ok(true)
-        }
-    }
-
-    #[derive(Debug, Clone)]
-    struct MockPasskeyProviderImpl {
-        discover_result: Arc<Mutex<MockDiscoverResult>>,
-    }
-
-    impl Default for MockPasskeyProviderImpl {
-        fn default() -> Self {
-            Self { discover_result: Arc::new(Mutex::new(Err(PasskeyError::NoCredentialFound))) }
-        }
-    }
-
-    impl MockPasskeyProviderImpl {
-        fn reset(&self) {
-            *self.discover_result.lock() = Err(PasskeyError::NoCredentialFound);
-        }
-
-        fn set_discover_result(&self, result: Result<DiscoveredPasskeyResult, PasskeyError>) {
-            *self.discover_result.lock() =
-                result.map(|value| (value.prf_output, value.credential_id));
-        }
-    }
-
-    impl PasskeyProvider for MockPasskeyProviderImpl {
-        fn create_passkey(
-            &self,
-            _rp_id: String,
-            _user_id: Vec<u8>,
-            _challenge: Vec<u8>,
-        ) -> Result<Vec<u8>, PasskeyError> {
-            Err(PasskeyError::CreationFailed("unexpected create_passkey call".into()))
-        }
-
-        fn authenticate_with_prf(
-            &self,
-            _rp_id: String,
-            _credential_id: Vec<u8>,
-            _prf_salt: Vec<u8>,
-            _challenge: Vec<u8>,
-        ) -> Result<Vec<u8>, PasskeyError> {
-            Err(PasskeyError::AuthenticationFailed("unexpected authenticate_with_prf call".into()))
-        }
-
-        fn discover_and_authenticate_with_prf(
-            &self,
-            _rp_id: String,
-            _prf_salt: Vec<u8>,
-            _challenge: Vec<u8>,
-        ) -> Result<DiscoveredPasskeyResult, PasskeyError> {
-            self.discover_result.lock().clone().map(|(prf_output, credential_id)| {
-                DiscoveredPasskeyResult { prf_output, credential_id }
-            })
-        }
-
-        fn is_prf_supported(&self) -> bool {
-            true
-        }
-
-        fn check_passkey_presence(
-            &self,
-            _rp_id: String,
-            _credential_id: Vec<u8>,
-        ) -> PasskeyCredentialPresence {
-            PasskeyCredentialPresence::Present
-        }
-    }
-
-    struct TestGlobals {
-        keychain: MockKeychain,
-        cloud: MockCloudStorage,
-        passkey: MockPasskeyProviderImpl,
-    }
-
-    impl TestGlobals {
-        fn init() -> Self {
-            let keychain = MockKeychain::default();
-            let cloud = MockCloudStorage::default();
-            let passkey = MockPasskeyProviderImpl::default();
-
-            let _ = Keychain::new(Box::new(keychain.clone()));
-            let _ = CloudStorage::new(Box::new(cloud.clone()));
-            let _ = PasskeyAccess::new(Box::new(passkey.clone()));
-
-            Self { keychain, cloud, passkey }
-        }
-
-        fn reset(&self) {
-            self.keychain.reset();
-            self.cloud.reset();
-            self.passkey.reset();
-            cove_cspp::Cspp::<Keychain>::clear_cached_master_key();
-        }
-    }
-
-    fn test_globals() -> &'static TestGlobals {
-        static GLOBALS: OnceLock<TestGlobals> = OnceLock::new();
-        GLOBALS.get_or_init(TestGlobals::init)
-    }
-
-    fn test_lock() -> &'static parking_lot::Mutex<()> {
-        super::super::cloud_backup_test_lock()
-    }
-
-    fn clear_local_wallets() {
-        let wallets = Database::global().wallets();
-        for network in Network::iter() {
-            for mode in WalletMode::iter() {
-                wallets.save_all_wallets(network, mode, Vec::new()).unwrap();
-            }
-        }
-    }
-
-    fn persist_dirty_blob_state(wallet_id: WalletId) {
-        let namespace_id = Keychain::global().get(CSPP_NAMESPACE_ID_KEY.into()).unwrap();
-        let record_id = cove_cspp::backup_data::wallet_record_id(wallet_id.as_ref());
-        let changed_at = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
-
-        Database::global()
-            .cloud_blob_sync_states
-            .set(&PersistedCloudBlobSyncState {
-                kind: CloudUploadKind::BackupBlob,
-                namespace_id,
-                wallet_id: Some(wallet_id),
-                record_id,
-                state: PersistedCloudBlobState::Dirty(CloudBlobDirtyState { changed_at }),
-            })
-            .unwrap();
-    }
-
-    fn mutate_wallet_and_persist_dirty(wallet_id: WalletId) {
-        let mut wallet = all_local_wallets(&Database::global())
-            .unwrap()
-            .into_iter()
-            .find(|wallet| wallet.id == wallet_id)
-            .unwrap();
-        wallet.name.push_str(" updated");
-        Database::global()
-            .wallets()
-            .save_all_wallets(wallet.network, wallet.wallet_mode, vec![wallet.clone()])
-            .unwrap();
-        persist_dirty_blob_state(wallet.id);
-    }
-
-    fn persist_failed_blob_state(wallet_id: WalletId, retryable: bool) {
-        let namespace_id = Keychain::global().get(CSPP_NAMESPACE_ID_KEY.into()).unwrap();
-        let record_id = cove_cspp::backup_data::wallet_record_id(wallet_id.as_ref());
-        let failed_at = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
-
-        Database::global()
-            .cloud_blob_sync_states
-            .set(&PersistedCloudBlobSyncState {
-                kind: CloudUploadKind::BackupBlob,
-                namespace_id,
-                wallet_id: Some(wallet_id),
-                record_id,
-                state: PersistedCloudBlobState::Failed(CloudBlobFailedState {
-                    revision_hash: Some("rev-1".into()),
-                    retryable,
-                    error: "failed".into(),
-                    failed_at,
-                }),
-            })
-            .unwrap();
-    }
-
-    fn persist_uploading_blob_state(wallet_id: WalletId, started_at: u64) {
-        let namespace_id = Keychain::global().get(CSPP_NAMESPACE_ID_KEY.into()).unwrap();
-        let record_id = cove_cspp::backup_data::wallet_record_id(wallet_id.as_ref());
-
-        Database::global()
-            .cloud_blob_sync_states
-            .set(&PersistedCloudBlobSyncState {
-                kind: CloudUploadKind::BackupBlob,
-                namespace_id,
-                wallet_id: Some(wallet_id),
-                record_id,
-                state: PersistedCloudBlobState::Uploading(CloudBlobUploadingState {
-                    revision_hash: "rev-1".into(),
-                    started_at,
-                }),
-            })
-            .unwrap();
-    }
-
-    fn reset_cloud_backup_test_state(manager: &RustCloudBackupManager, globals: &TestGlobals) {
-        globals.reset();
-        clear_local_wallets();
-        manager.debug_reset_cloud_backup_state();
-        manager.clear_wallet_upload_debouncers_for_test();
-    }
-
-    async fn wait_for_test_condition(
-        timeout: Duration,
-        message: &str,
-        mut condition: impl FnMut() -> bool,
-    ) {
-        tokio::time::timeout(timeout, async {
-            loop {
-                if condition() {
-                    break;
-                }
-
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .expect(message);
-    }
-
-    async fn assert_test_condition_stays_true(
-        duration: Duration,
-        message: &str,
-        mut condition: impl FnMut() -> bool,
-    ) {
-        let deadline = tokio::time::Instant::now() + duration;
-        while tokio::time::Instant::now() < deadline {
-            assert!(condition(), "{message}");
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
-    fn configure_enabled_cloud_backup(
-        manager: &RustCloudBackupManager,
-        globals: &TestGlobals,
-        wallet_count: u32,
-    ) {
-        reset_cloud_backup_test_state(manager, globals);
-
-        let master_key = cove_cspp::master_key::MasterKey::generate();
-        let namespace = master_key.namespace_id();
-        let keychain = Keychain::global();
-        keychain.save(CSPP_NAMESPACE_ID_KEY.into(), namespace).unwrap();
-        cove_cspp::Cspp::new(keychain.clone()).save_master_key(&master_key).unwrap();
-
-        manager
-            .persist_cloud_backup_state(
-                &PersistedCloudBackupState {
-                    status: PersistedCloudBackupStatus::Enabled,
-                    wallet_count: Some(wallet_count),
-                    ..PersistedCloudBackupState::default()
-                },
-                "set cloud backup enabled for test",
-            )
-            .unwrap();
-        manager.sync_persisted_state();
-    }
-
-    fn enable_cloud_backup_without_reset(manager: &RustCloudBackupManager, wallet_count: u32) {
-        let master_key = cove_cspp::master_key::MasterKey::generate();
-        let namespace = master_key.namespace_id();
-        let keychain = Keychain::global();
-        keychain.save(CSPP_NAMESPACE_ID_KEY.into(), namespace).unwrap();
-        cove_cspp::Cspp::new(keychain.clone()).save_master_key(&master_key).unwrap();
-
-        manager
-            .persist_cloud_backup_state(
-                &PersistedCloudBackupState {
-                    status: PersistedCloudBackupStatus::Enabled,
-                    wallet_count: Some(wallet_count),
-                    ..PersistedCloudBackupState::default()
-                },
-                "set cloud backup enabled for test",
-            )
-            .unwrap();
-        manager.sync_persisted_state();
-    }
-
-    fn xpub_only_wallet_metadata() -> WalletMetadata {
-        let mut metadata = WalletMetadata::preview_new();
-        metadata.wallet_type = WalletType::XpubOnly;
-        metadata
-    }
-
-    fn sample_xpub(metadata: &WalletMetadata) -> String {
-        let mnemonic = Mnemonic::parse(
-            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        )
-        .unwrap();
-        mnemonic.xpub(metadata.network.into()).to_string()
-    }
-
-    fn persist_xpub_wallets(wallets: Vec<WalletMetadata>) {
-        for wallet in &wallets {
-            let xpub = sample_xpub(wallet);
-            Keychain::global().save_wallet_xpub(&wallet.id, xpub.parse().unwrap()).unwrap();
-        }
-
-        let Some(first_wallet) = wallets.first() else {
-            return;
-        };
-
-        Database::global()
-            .wallets()
-            .save_all_wallets(first_wallet.network, first_wallet.wallet_mode, wallets)
-            .unwrap();
-    }
-
-    fn encrypted_wallet_backup_bytes(
-        metadata: &WalletMetadata,
-        master_key: &cove_cspp::master_key::MasterKey,
-        revision_hash: &str,
-        version: u32,
-    ) -> Vec<u8> {
-        let mut prepared = crate::manager::cloud_backup_manager::wallets::prepare_wallet_backup(
-            metadata,
-            metadata.wallet_mode,
-        )
-        .unwrap();
-        prepared.entry.content_revision_hash = revision_hash.to_string();
-
-        let critical_key = zeroize::Zeroizing::new(master_key.critical_data_key());
-        let mut encrypted =
-            cove_cspp::wallet_crypto::encrypt_wallet_entry(&prepared.entry, &critical_key).unwrap();
-        encrypted.version = version;
-        serde_json::to_vec(&encrypted).unwrap()
-    }
-
-    fn wallet_entry_with_labels(
-        metadata: &WalletMetadata,
-        labels_jsonl: Option<&str>,
-    ) -> WalletEntry {
-        let labels_count = labels_jsonl
-            .map(|jsonl| jsonl.lines().filter(|line| !line.trim().is_empty()).count() as u32)
-            .unwrap_or_default();
-        let labels_zstd_jsonl =
-            labels_jsonl.map(|jsonl| crate::backup::crypto::compress(jsonl.as_bytes()).unwrap());
-        let labels_hash = labels_jsonl
-            .filter(|jsonl| !jsonl.is_empty())
-            .map(|jsonl| hex::encode(sha2::Sha256::digest(jsonl.as_bytes())));
-        let labels_uncompressed_size =
-            labels_jsonl.map(|jsonl| jsonl.len().try_into().unwrap_or(u32::MAX));
-
-        WalletEntry {
-            wallet_id: metadata.id.to_string(),
-            secret: WalletSecret::WatchOnly,
-            metadata: serde_json::to_value(metadata).unwrap(),
-            descriptors: None,
-            xpub: Some(sample_xpub(metadata)),
-            wallet_mode: CloudWalletMode::Main,
-            labels_zstd_jsonl,
-            labels_count,
-            labels_hash,
-            labels_uncompressed_size,
-            content_revision_hash: "test-content-hash".to_string(),
-            updated_at: 42,
-        }
-    }
-
-    fn encrypted_wallet_backup_bytes_for_entry(
-        entry: &WalletEntry,
-        master_key: &cove_cspp::master_key::MasterKey,
-        version: u32,
-    ) -> Vec<u8> {
-        let critical_key = zeroize::Zeroizing::new(master_key.critical_data_key());
-        let mut encrypted =
-            cove_cspp::wallet_crypto::encrypt_wallet_entry(entry, &critical_key).unwrap();
-        encrypted.version = version;
-        serde_json::to_vec(&encrypted).unwrap()
-    }
-
-    fn sample_labels_jsonl() -> &'static str {
-        r#"{"type":"tx","ref":"d97bf8892657980426c879e4ab2001f09342f1ab61cfa602741a7715a3d60290","label":"last txn received","origin":"pkh([73c5da0a/44h/0h/0h])"}"#
-    }
-
-    fn prepare_deep_verify_with_unsynced_wallet(
-        manager: &RustCloudBackupManager,
-        globals: &TestGlobals,
-    ) -> crate::wallet::metadata::WalletMetadata {
-        reset_cloud_backup_test_state(manager, globals);
-
-        let master_key = cove_cspp::master_key::MasterKey::generate();
-        let namespace = master_key.namespace_id();
-        let prf_key = [7u8; 32];
-        let prf_salt = [9u8; 32];
-        let credential_id = vec![1, 2, 3, 4];
-        let encrypted_master =
-            cove_cspp::master_key_crypto::encrypt_master_key(&master_key, &prf_key, &prf_salt)
-                .unwrap();
-
-        globals.cloud.set_master_key_backup(
-            namespace.clone(),
-            serde_json::to_vec(&encrypted_master).unwrap(),
-        );
-        globals.cloud.set_reflect_uploaded_wallets_in_listing(false);
-        globals.passkey.set_discover_result(Ok(DiscoveredPasskeyResult {
-            prf_output: prf_key.to_vec(),
-            credential_id,
-        }));
-
-        let keychain = Keychain::global();
-        keychain.save(CSPP_NAMESPACE_ID_KEY.into(), namespace).unwrap();
-        cove_cspp::Cspp::new(keychain.clone()).save_master_key(&master_key).unwrap();
-
-        manager
-            .persist_cloud_backup_state(
-                &PersistedCloudBackupState {
-                    status: PersistedCloudBackupStatus::Enabled,
-                    ..PersistedCloudBackupState::default()
-                },
-                "set cloud backup enabled for test",
-            )
-            .unwrap();
-
-        let mut metadata = crate::wallet::metadata::WalletMetadata::preview_new();
-        metadata.wallet_type = crate::wallet::metadata::WalletType::WatchOnly;
-        Database::global()
-            .wallets()
-            .save_all_wallets(metadata.network, metadata.wallet_mode, vec![metadata.clone()])
-            .unwrap();
-
-        metadata
     }
 
     #[test]
@@ -1833,6 +1122,10 @@ mod tests {
         ));
     }
 
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "tests serialize shared cloud backup globals across awaits"
+    )]
     #[tokio::test(flavor = "current_thread")]
     async fn backup_new_wallet_marks_verification_required() {
         let _guard = test_lock().lock();
@@ -1887,7 +1180,7 @@ mod tests {
             Some(PersistedCloudBlobSyncState { state: PersistedCloudBlobState::Dirty(_), .. })
         ));
 
-        clear_wallet_upload_runtime_for_test_async(&manager).await;
+        manager.clear_wallet_upload_debouncers_for_test();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2058,6 +1351,10 @@ mod tests {
         assert!(cspp.load_master_key_from_store().unwrap().is_none());
     }
 
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "tests serialize shared cloud backup globals across awaits"
+    )]
     #[tokio::test(flavor = "current_thread")]
     async fn reupload_all_wallets_persists_full_cloud_wallet_count() {
         let _guard = test_lock().lock();
@@ -2193,6 +1490,10 @@ mod tests {
         ));
     }
 
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "tests serialize shared cloud backup globals across awaits"
+    )]
     #[tokio::test(flavor = "current_thread")]
     async fn failed_live_wallet_upload_retries_without_restart() {
         let _guard = test_lock().lock();
@@ -2222,8 +1523,7 @@ mod tests {
                 ..
             })
         ));
-
-        assert!(manager.wallet_upload_debouncers.lock().contains_key(&metadata.id));
+        assert!(manager.has_wallet_upload_debouncer_for_test(metadata.id.clone()));
 
         manager.clear_wallet_upload_debouncers_for_test();
         manager.run_wallet_upload_for_test(metadata.id.clone());
@@ -2287,6 +1587,10 @@ mod tests {
         globals.cloud.clear_wallet_backup_upload_failure();
     }
 
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "tests serialize shared cloud backup globals across awaits"
+    )]
     #[tokio::test(flavor = "current_thread")]
     async fn sync_error_clears_only_after_last_failed_wallet_upload_recovers() {
         let _guard = test_lock().lock();
@@ -2385,6 +1689,10 @@ mod tests {
         globals.cloud.clear_wallet_backup_upload_failure();
     }
 
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "tests serialize shared cloud backup globals across awaits"
+    )]
     #[tokio::test(flavor = "current_thread")]
     async fn startup_resume_retries_interrupted_uploading_wallets() {
         let _guard = test_lock().lock();
