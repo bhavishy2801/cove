@@ -364,8 +364,27 @@ impl PendingVerificationUpload {
         &self.expected_revision
     }
 
+    pub(crate) fn target_revision(&self, sync_state: Option<&PersistedCloudBlobState>) -> String {
+        sync_state
+            .and_then(PersistedCloudBlobState::revision_hash)
+            .unwrap_or(&self.expected_revision)
+            .to_owned()
+    }
+
     fn from_persisted(upload: PersistedPendingVerificationUpload) -> Self {
         Self { record_id: upload.record_id, expected_revision: upload.expected_revision }
+    }
+}
+
+impl PersistedCloudBlobState {
+    pub(crate) fn revision_hash(&self) -> Option<&str> {
+        match self {
+            Self::Uploading(state) => Some(&state.revision_hash),
+            Self::UploadedPendingConfirmation(state) => Some(&state.revision_hash),
+            Self::Confirmed(state) => Some(&state.revision_hash),
+            Self::Failed(state) => state.revision_hash.as_deref(),
+            Self::Dirty(_) => None,
+        }
     }
 }
 

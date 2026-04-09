@@ -106,19 +106,18 @@ pub fn build_wallet_entry(
     let name = &metadata.name;
 
     let secret = match metadata.wallet_type {
-        WalletType::Hot => match keychain.get_wallet_key(id) {
-            Ok(Some(mnemonic)) => CloudWalletSecret::Mnemonic(mnemonic.to_string()),
-            Ok(None) => {
+        WalletType::Hot => {
+            let mnemonic = keychain.get_wallet_key(id).map_err(|error| {
+                CloudBackupError::Internal(format!("failed to get mnemonic for '{name}': {error}"))
+            })?;
+            let Some(mnemonic) = mnemonic else {
                 return Err(CloudBackupError::Internal(format!(
                     "hot wallet '{name}' has no mnemonic"
                 )));
-            }
-            Err(error) => {
-                return Err(CloudBackupError::Internal(format!(
-                    "failed to get mnemonic for '{name}': {error}"
-                )));
-            }
-        },
+            };
+
+            CloudWalletSecret::Mnemonic(mnemonic.to_string())
+        }
         WalletType::Cold => build_cold_wallet_secret(keychain, metadata, id, name)?,
         WalletType::XpubOnly | WalletType::WatchOnly => CloudWalletSecret::WatchOnly,
     };

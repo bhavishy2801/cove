@@ -56,52 +56,52 @@ impl WalletBackupReader {
         &self,
         record_id: &str,
     ) -> Result<WalletBackupLookup<RemoteWalletBackupSummary>, CloudBackupError> {
-        Ok(match self.lookup_entry(record_id)? {
+        match self.lookup_entry(record_id)? {
             WalletBackupLookup::Found(entry) => {
-                WalletBackupLookup::Found(RemoteWalletBackupSummary {
+                Ok(WalletBackupLookup::Found(RemoteWalletBackupSummary {
                     revision_hash: entry.content_revision_hash.clone(),
                     label_count: entry.labels_count,
                     updated_at: entry.updated_at,
-                })
+                }))
             }
-            WalletBackupLookup::NotFound => WalletBackupLookup::NotFound,
+            WalletBackupLookup::NotFound => Ok(WalletBackupLookup::NotFound),
             WalletBackupLookup::UnsupportedVersion(version) => {
-                WalletBackupLookup::UnsupportedVersion(version)
+                Ok(WalletBackupLookup::UnsupportedVersion(version))
             }
-        })
+        }
     }
 
     pub(crate) fn lookup(
         &self,
         record_id: &str,
     ) -> Result<WalletBackupLookup<DownloadedWalletBackup>, CloudBackupError> {
-        Ok(match self.lookup_entry(record_id)? {
+        match self.lookup_entry(record_id)? {
             WalletBackupLookup::Found(entry) => {
                 let metadata = serde_json::from_value(entry.metadata.clone())
                     .map_err_prefix("parse wallet metadata", CloudBackupError::Internal)?;
-                WalletBackupLookup::Found(DownloadedWalletBackup { metadata, entry })
+                Ok(WalletBackupLookup::Found(DownloadedWalletBackup { metadata, entry }))
             }
-            WalletBackupLookup::NotFound => WalletBackupLookup::NotFound,
+            WalletBackupLookup::NotFound => Ok(WalletBackupLookup::NotFound),
             WalletBackupLookup::UnsupportedVersion(version) => {
-                WalletBackupLookup::UnsupportedVersion(version)
+                Ok(WalletBackupLookup::UnsupportedVersion(version))
             }
-        })
+        }
     }
 
     pub(crate) fn lookup_entry(
         &self,
         record_id: &str,
     ) -> Result<WalletBackupLookup<WalletEntry>, CloudBackupError> {
-        Ok(match self.download_encrypted(record_id)? {
-            WalletBackupLookup::Found(encrypted) => WalletBackupLookup::Found(
+        match self.download_encrypted(record_id)? {
+            WalletBackupLookup::Found(encrypted) => Ok(WalletBackupLookup::Found(
                 self.decrypt_entry(&encrypted)
                     .map_err_prefix("decrypt wallet", CloudBackupError::Crypto)?,
-            ),
-            WalletBackupLookup::NotFound => WalletBackupLookup::NotFound,
+            )),
+            WalletBackupLookup::NotFound => Ok(WalletBackupLookup::NotFound),
             WalletBackupLookup::UnsupportedVersion(version) => {
-                WalletBackupLookup::UnsupportedVersion(version)
+                Ok(WalletBackupLookup::UnsupportedVersion(version))
             }
-        })
+        }
     }
 
     pub(crate) fn download_encrypted(
@@ -166,84 +166,79 @@ impl WalletRestoreSession {
         &mut self,
         wallet: &DownloadedWalletBackup,
     ) -> Result<WalletRestoreOutcome, CloudBackupError> {
-        if should_skip_duplicate_wallet(&wallet.metadata, &self.0) {
+        if self.should_skip_duplicate_wallet(&wallet.metadata) {
             return Ok(WalletRestoreOutcome::default());
         }
 
-        let outcome = restore_downloaded_wallet(&wallet.metadata, &wallet.entry)?;
-        remember_restored_wallet_fingerprint(&wallet.metadata, &mut self.0);
+        let outcome = wallet.restore()?;
+        self.remember_restored_wallet_fingerprint(&wallet.metadata);
 
         Ok(outcome)
     }
-}
 
-fn should_skip_duplicate_wallet(
-    metadata: &WalletMetadata,
-    existing_fingerprints: &ExistingFingerprints,
-) -> bool {
-    if crate::backup::import::is_wallet_duplicate(metadata, existing_fingerprints)
-        .inspect_err(|error| {
-            warn!("is_wallet_duplicate check failed for {}: {error}", metadata.name)
-        })
-        .unwrap_or(false)
-    {
-        info!("Skipping duplicate wallet {}", metadata.name);
-        true
-    } else {
-        false
+    fn should_skip_duplicate_wallet(&self, metadata: &WalletMetadata) -> bool {
+        if crate::backup::import::is_wallet_duplicate(metadata, &self.0)
+            .inspect_err(|error| {
+                warn!("is_wallet_duplicate check failed for {}: {error}", metadata.name)
+            })
+            .unwrap_or(false)
+        {
+            info!("Skipping duplicate wallet {}", metadata.name);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn remember_restored_wallet_fingerprint(&mut self, metadata: &WalletMetadata) {
+        if let Some(fingerprint) = &metadata.master_fingerprint {
+            self.0.push((**fingerprint, metadata.network, metadata.wallet_mode));
+        }
     }
 }
 
-fn restore_downloaded_wallet(
-    metadata: &WalletMetadata,
-    entry: &WalletEntry,
-) -> Result<WalletRestoreOutcome, CloudBackupError> {
-    let backup_model = crate::backup::model::WalletBackup {
-        metadata: entry.metadata.clone(),
-        secret: convert_cloud_secret(&entry.secret),
-        descriptors: descriptor_pair_from_cloud(&entry.descriptors),
-        xpub: entry.xpub.clone(),
-        labels_jsonl: decode_cloud_labels_jsonl(entry)?,
-    };
+impl DownloadedWalletBackup {
+    fn restore(&self) -> Result<WalletRestoreOutcome, CloudBackupError> {
+        let backup_model = crate::backup::model::WalletBackup {
+            metadata: self.entry.metadata.clone(),
+            secret: convert_cloud_secret(&self.entry.secret),
+            descriptors: descriptor_pair_from_cloud(&self.entry.descriptors),
+            xpub: self.entry.xpub.clone(),
+            labels_jsonl: decode_cloud_labels_jsonl(&self.entry)?,
+        };
 
-    match &backup_model.secret {
-        LocalWalletSecret::Mnemonic(words) => {
-            let mnemonic = bip39::Mnemonic::from_str(words)
-                .map_err_prefix("invalid mnemonic", CloudBackupError::Internal)?;
+        match &backup_model.secret {
+            LocalWalletSecret::Mnemonic(words) => {
+                let mnemonic = bip39::Mnemonic::from_str(words)
+                    .map_err_prefix("invalid mnemonic", CloudBackupError::Internal)?;
 
-            crate::backup::import::restore_cloud_mnemonic_wallet(metadata, mnemonic).map_err(
-                |(error, _)| {
-                    CloudBackupError::Internal(format!("restore mnemonic wallet: {error}"))
-                },
-            )?;
-        }
-        _ => {
-            crate::backup::import::restore_cloud_descriptor_wallet(metadata, &backup_model)
+                crate::backup::import::restore_cloud_mnemonic_wallet(&self.metadata, mnemonic)
+                    .map_err(|(error, _)| {
+                        CloudBackupError::Internal(format!("restore mnemonic wallet: {error}"))
+                    })?;
+            }
+            _ => {
+                crate::backup::import::restore_cloud_descriptor_wallet(
+                    &self.metadata,
+                    &backup_model,
+                )
                 .map_err(|(error, _)| {
                     CloudBackupError::Internal(format!("restore descriptor wallet: {error}"))
                 })?;
+            }
         }
-    }
 
-    let labels_outcome = restore_wallet_labels(
-        &metadata.id,
-        &metadata.name,
-        backup_model.labels_jsonl.as_deref(),
-        LabelRestoreBehavior::PreserveCloudBackupClean,
-    );
-    if let Some(warning) = &labels_outcome.warning {
-        warn!("Failed to restore labels for wallet {}: {}", metadata.name, warning.error);
-    }
+        let labels_outcome = restore_wallet_labels(
+            &self.metadata.id,
+            &self.metadata.name,
+            backup_model.labels_jsonl.as_deref(),
+            LabelRestoreBehavior::PreserveCloudBackupClean,
+        );
+        if let Some(warning) = &labels_outcome.warning {
+            warn!("Failed to restore labels for wallet {}: {}", self.metadata.name, warning.error);
+        }
 
-    Ok(WalletRestoreOutcome { labels_warning: labels_outcome.warning })
-}
-
-fn remember_restored_wallet_fingerprint(
-    metadata: &WalletMetadata,
-    existing_fingerprints: &mut ExistingFingerprints,
-) {
-    if let Some(fingerprint) = &metadata.master_fingerprint {
-        existing_fingerprints.push((**fingerprint, metadata.network, metadata.wallet_mode));
+        Ok(WalletRestoreOutcome { labels_warning: labels_outcome.warning })
     }
 }
 
@@ -375,11 +370,11 @@ mod tests {
     #[test]
     fn remember_restored_wallet_fingerprint_tracks_restored_wallet() {
         let metadata = WalletMetadata::preview_new();
-        let mut existing_fingerprints = Vec::new();
+        let mut session = WalletRestoreSession::new(Vec::new());
 
-        remember_restored_wallet_fingerprint(&metadata, &mut existing_fingerprints);
+        session.remember_restored_wallet_fingerprint(&metadata);
 
-        assert_eq!(existing_fingerprints.len(), 1);
-        assert_eq!(existing_fingerprints[0].0, *metadata.master_fingerprint.unwrap().as_ref());
+        assert_eq!(session.0.len(), 1);
+        assert_eq!(session.0[0].0, *metadata.master_fingerprint.unwrap().as_ref());
     }
 }

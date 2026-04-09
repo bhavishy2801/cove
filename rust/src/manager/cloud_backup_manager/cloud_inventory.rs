@@ -31,12 +31,12 @@ enum WalletItemBucket {
     NeedsSync,
 }
 
-enum RemoteWalletState<'a> {
+enum RemoteWalletState {
     Unknown,
     Unsupported,
     Missing,
-    Matching(&'a RemoteWalletBackupSummary),
-    Stale(&'a RemoteWalletBackupSummary),
+    Matching(RemoteWalletBackupSummary),
+    Stale(RemoteWalletBackupSummary),
 }
 
 pub(super) struct CloudWalletInventory {
@@ -184,19 +184,15 @@ impl CloudWalletInventory {
         let sync_state = self.sync_states_by_record_id.get(&wallet.record_id)?;
 
         match &sync_state.state {
-            crate::database::cloud_backup::PersistedCloudBlobState::UploadedPendingConfirmation(
-                state,
-            ) => Some(state.uploaded_at),
-            crate::database::cloud_backup::PersistedCloudBlobState::Confirmed(state) => {
-                Some(state.confirmed_at)
-            }
-            crate::database::cloud_backup::PersistedCloudBlobState::Dirty(_)
-            | crate::database::cloud_backup::PersistedCloudBlobState::Uploading(_)
-            | crate::database::cloud_backup::PersistedCloudBlobState::Failed(_) => None,
+            PersistedCloudBlobState::UploadedPendingConfirmation(state) => Some(state.uploaded_at),
+            PersistedCloudBlobState::Confirmed(state) => Some(state.confirmed_at),
+            PersistedCloudBlobState::Dirty(_)
+            | PersistedCloudBlobState::Uploading(_)
+            | PersistedCloudBlobState::Failed(_) => None,
         }
     }
 
-    fn remote_wallet_state<'a>(&'a self, wallet: &LocalWalletSnapshot) -> RemoteWalletState<'a> {
+    fn remote_wallet_state(&self, wallet: &LocalWalletSnapshot) -> RemoteWalletState {
         if self.remote_wallet_truth.unsupported_record_ids.contains(&wallet.record_id) {
             return RemoteWalletState::Unsupported;
         }
@@ -212,10 +208,10 @@ impl CloudWalletInventory {
         };
 
         if remote_summary.revision_hash == wallet.revision_hash {
-            return RemoteWalletState::Matching(remote_summary);
+            return RemoteWalletState::Matching(remote_summary.clone());
         }
 
-        RemoteWalletState::Stale(remote_summary)
+        RemoteWalletState::Stale(remote_summary.clone())
     }
 }
 
@@ -253,17 +249,13 @@ fn sync_status_from_state(
     fallback_status: CloudBackupWalletStatus,
 ) -> CloudBackupWalletStatus {
     match sync_state.map(|state| &state.state) {
-        Some(crate::database::cloud_backup::PersistedCloudBlobState::Uploading(_)) => {
-            CloudBackupWalletStatus::Uploading
+        Some(PersistedCloudBlobState::Uploading(_)) => CloudBackupWalletStatus::Uploading,
+        Some(PersistedCloudBlobState::UploadedPendingConfirmation(_)) => {
+            CloudBackupWalletStatus::UploadedPendingConfirmation
         }
-        Some(
-            crate::database::cloud_backup::PersistedCloudBlobState::UploadedPendingConfirmation(_),
-        ) => CloudBackupWalletStatus::UploadedPendingConfirmation,
-        Some(crate::database::cloud_backup::PersistedCloudBlobState::Failed(_)) => {
-            CloudBackupWalletStatus::Failed
-        }
-        Some(crate::database::cloud_backup::PersistedCloudBlobState::Dirty(_))
-        | Some(crate::database::cloud_backup::PersistedCloudBlobState::Confirmed(_))
+        Some(PersistedCloudBlobState::Failed(_)) => CloudBackupWalletStatus::Failed,
+        Some(PersistedCloudBlobState::Dirty(_))
+        | Some(PersistedCloudBlobState::Confirmed(_))
         | None => fallback_status,
     }
 }

@@ -97,7 +97,7 @@ pub(super) fn authenticate_with_policy(
     }))
 }
 
-impl VerificationSession<'_> {
+impl VerificationSession {
     pub(super) fn authenticate_with_fallback(
         &self,
         prf_salt: &[u8; 32],

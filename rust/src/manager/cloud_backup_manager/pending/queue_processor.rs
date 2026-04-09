@@ -20,11 +20,11 @@ enum BlobCheckResult {
     Failed { error: String, retryable: bool },
 }
 
-pub(super) struct PendingUploadVerifier<'a>(pub(super) &'a RustCloudBackupManager);
+pub(super) struct PendingUploadVerifier(pub(super) RustCloudBackupManager);
 
 const MAX_PENDING_WALLET_UPLOAD_CONFIRMATION_ATTEMPTS: u32 = 3;
 
-impl PendingUploadVerifier<'_> {
+impl PendingUploadVerifier {
     pub(super) fn run_once(&self) -> bool {
         let table = &Database::global().cloud_blob_sync_states;
         let states = match table.list() {

@@ -61,7 +61,7 @@ impl<'a> VerificationSession<'a> {
             .map_err_prefix("load local master key", CloudBackupError::Internal)?;
 
         Ok(Self {
-            manager,
+            manager: manager.clone(),
             keychain,
             cspp,
             cloud: CloudStorage::global().clone(),
@@ -285,7 +285,7 @@ impl<'a> VerificationSession<'a> {
         };
 
         let repair = WrapperRepairOperation::new(
-            self.manager,
+            &self.manager,
             &self.keychain,
             &self.cloud,
             &self.passkey,

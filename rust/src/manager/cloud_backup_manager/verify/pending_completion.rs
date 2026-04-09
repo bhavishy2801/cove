@@ -13,7 +13,7 @@ use super::{
 use crate::database::Database;
 use crate::database::cloud_backup::{CloudBlobConfirmedState, PersistedCloudBlobState};
 use crate::manager::cloud_backup_manager::{
-    PendingVerificationUpload,
+    CloudBackupDetail, PendingVerificationUpload,
     wallets::{WalletBackupLookup, WalletBackupReader},
 };
 
@@ -27,25 +27,6 @@ enum PendingWalletVerificationOutcome {
 enum FinalizePendingVerificationResult {
     Pending,
     Completed(DeepVerificationReport),
-}
-
-fn sync_state_revision_hash(sync_state: Option<&PersistedCloudBlobState>) -> Option<&str> {
-    match sync_state {
-        Some(PersistedCloudBlobState::Uploading(state)) => Some(&state.revision_hash),
-        Some(PersistedCloudBlobState::UploadedPendingConfirmation(state)) => {
-            Some(&state.revision_hash)
-        }
-        Some(PersistedCloudBlobState::Confirmed(state)) => Some(&state.revision_hash),
-        Some(PersistedCloudBlobState::Failed(state)) => state.revision_hash.as_deref(),
-        Some(PersistedCloudBlobState::Dirty(_)) | None => None,
-    }
-}
-
-fn pending_verification_target_revision<'a>(
-    upload: &'a PendingVerificationUpload,
-    sync_state: Option<&'a PersistedCloudBlobState>,
-) -> &'a str {
-    sync_state_revision_hash(sync_state).unwrap_or(upload.expected_revision())
 }
 
 impl RustCloudBackupManager {
@@ -84,28 +65,35 @@ impl RustCloudBackupManager {
         completion.uploads().iter().all(|upload| {
             let sync_state = sync_states_by_record_id.get(upload.record_id());
 
-            match sync_state {
-                Some(PersistedCloudBlobState::Confirmed(CloudBlobConfirmedState {
-                    revision_hash,
-                    ..
-                })) => revision_hash == pending_verification_target_revision(upload, sync_state),
-                Some(PersistedCloudBlobState::Failed(_)) => true,
-                Some(PersistedCloudBlobState::UploadedPendingConfirmation(_)) => {
-                    CloudStorage::global()
-                        .download_wallet_backup(
-                            completion.namespace_id().to_string(),
-                            upload.record_id().to_string(),
-                        )
-                        .map(|_| true)
-                        .or_else(|error| match error {
-                            CloudStorageError::NotFound(_) => Ok(false),
-                            other => Err(other),
-                        })
-                        .unwrap_or(false)
-                }
-                _ => false,
-            }
+            self.is_pending_upload_confirmed(completion, upload, sync_state)
         })
+    }
+
+    fn is_pending_upload_confirmed(
+        &self,
+        completion: &PendingVerificationCompletion,
+        upload: &PendingVerificationUpload,
+        sync_state: Option<&PersistedCloudBlobState>,
+    ) -> bool {
+        match sync_state {
+            Some(PersistedCloudBlobState::Confirmed(CloudBlobConfirmedState {
+                revision_hash,
+                ..
+            })) => revision_hash.as_str() == upload.target_revision(sync_state),
+            Some(PersistedCloudBlobState::Failed(_)) => true,
+            Some(PersistedCloudBlobState::UploadedPendingConfirmation(_)) => CloudStorage::global()
+                .download_wallet_backup(
+                    completion.namespace_id().to_string(),
+                    upload.record_id().to_string(),
+                )
+                .map(|_| true)
+                .or_else(|error| match error {
+                    CloudStorageError::NotFound(_) => Ok(false),
+                    other => Err(other),
+                })
+                .unwrap_or(false),
+            _ => false,
+        }
     }
 
     fn finalize_pending_verification(
@@ -165,7 +153,7 @@ impl RustCloudBackupManager {
         critical_key: &[u8; 32],
     ) -> Result<PendingWalletVerificationOutcome, Box<DeepVerificationFailure>> {
         let record_id = upload.record_id();
-        let expected_revision = pending_verification_target_revision(upload, sync_state);
+        let expected_revision = upload.target_revision(sync_state);
         let reader = WalletBackupReader::new(
             CloudStorage::global().clone(),
             completion.namespace_id().to_string(),
@@ -173,17 +161,16 @@ impl RustCloudBackupManager {
         );
 
         match reader.summary(record_id) {
-            Ok(WalletBackupLookup::Found(summary)) => {
-                if summary.revision_hash != expected_revision {
-                    warn!(
-                        "Pending verification: wallet {record_id} is still stale expected_revision={} actual_revision={}",
-                        expected_revision, summary.revision_hash
-                    );
-                    return Ok(PendingWalletVerificationOutcome::Pending);
-                }
-
-                Ok(PendingWalletVerificationOutcome::Verified)
+            Ok(WalletBackupLookup::Found(summary))
+                if summary.revision_hash != expected_revision =>
+            {
+                warn!(
+                    "Pending verification: wallet {record_id} is still stale expected_revision={} actual_revision={}",
+                    expected_revision, summary.revision_hash
+                );
+                Ok(PendingWalletVerificationOutcome::Pending)
             }
+            Ok(WalletBackupLookup::Found(_)) => Ok(PendingWalletVerificationOutcome::Verified),
             Ok(WalletBackupLookup::NotFound) => {
                 warn!("Pending verification: wallet {record_id} is not ready yet: not found");
                 Ok(PendingWalletVerificationOutcome::Pending)
@@ -205,7 +192,7 @@ impl RustCloudBackupManager {
     fn pending_verification_detail(
         &self,
         completion: &PendingVerificationCompletion,
-    ) -> Option<super::super::CloudBackupDetail> {
+    ) -> Option<CloudBackupDetail> {
         match self.refresh_cloud_backup_detail() {
             Some(CloudBackupDetailResult::Success(detail)) => Some(detail),
             Some(CloudBackupDetailResult::AccessError(error)) => {

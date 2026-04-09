@@ -7,6 +7,59 @@ use tracing::{info, warn};
 use super::super::{CloudBackupError, PASSKEY_RP_ID};
 use super::UnpersistedPrfKey;
 
+trait PasskeyAccessExt {
+    fn create_new_prf_key(&self, log_message: &str) -> Result<UnpersistedPrfKey, CloudBackupError>;
+    fn create_new_prf_key_for_wrapper_repair(&self) -> Result<UnpersistedPrfKey, CloudBackupError>;
+}
+
+impl PasskeyAccessExt for PasskeyAccess {
+    fn create_new_prf_key(&self, log_message: &str) -> Result<UnpersistedPrfKey, CloudBackupError> {
+        info!("{log_message}");
+        let prf_salt: [u8; 32] = rand::rng().random();
+        let credential_id = self
+            .create_passkey(
+                PASSKEY_RP_ID.to_string(),
+                rand::rng().random::<[u8; 16]>().to_vec(),
+                random_challenge(),
+            )
+            .map_err(map_enable_passkey_error)?;
+
+        let prf_output = self
+            .authenticate_with_prf(
+                PASSKEY_RP_ID.to_string(),
+                credential_id.clone(),
+                prf_salt.to_vec(),
+                random_challenge(),
+            )
+            .map_err(map_enable_passkey_error)?;
+
+        Ok(UnpersistedPrfKey { prf_key: prf_output_to_key(prf_output)?, prf_salt, credential_id })
+    }
+
+    fn create_new_prf_key_for_wrapper_repair(&self) -> Result<UnpersistedPrfKey, CloudBackupError> {
+        info!("Creating new passkey for wrapper repair");
+        let prf_salt: [u8; 32] = rand::rng().random();
+        let credential_id = self
+            .create_passkey(
+                PASSKEY_RP_ID.to_string(),
+                rand::rng().random::<[u8; 16]>().to_vec(),
+                random_challenge(),
+            )
+            .map_err(map_wrapper_repair_passkey_error)?;
+
+        let prf_output = self
+            .authenticate_with_prf(
+                PASSKEY_RP_ID.to_string(),
+                credential_id.clone(),
+                prf_salt.to_vec(),
+                random_challenge(),
+            )
+            .map_err(map_wrapper_repair_passkey_error)?;
+
+        Ok(UnpersistedPrfKey { prf_key: prf_output_to_key(prf_output)?, prf_salt, credential_id })
+    }
+}
+
 pub struct NamespaceMatch {
     pub namespace_id: String,
     pub master_key: cove_cspp::master_key::MasterKey,
@@ -29,7 +82,7 @@ pub enum NamespaceMatchOutcome {
 pub fn create_prf_key_without_persisting(
     passkey: &PasskeyAccess,
 ) -> Result<UnpersistedPrfKey, CloudBackupError> {
-    create_new_prf_key_for_wrapper_repair(passkey)
+    passkey.create_new_prf_key_for_wrapper_repair()
 }
 
 /// Try to discover an existing passkey, fall back to creating a new one
@@ -87,22 +140,22 @@ pub fn try_match_namespace_with_passkey(
     let mut had_unsupported_versions = false;
 
     for namespace in namespaces {
-        let master_json = match cloud.download_master_key_backup(namespace.clone()) {
-            Ok(json) => json,
-            Err(error) => {
+        let Ok(master_json) =
+            cloud.download_master_key_backup(namespace.clone()).inspect_err(|error| {
                 warn!("Failed to download master key for namespace {namespace}: {error}");
                 had_download_failures = true;
-                continue;
-            }
+            })
+        else {
+            continue;
         };
 
-        let encrypted: EncryptedMasterKeyBackup = match serde_json::from_slice(&master_json) {
-            Ok(encrypted) => encrypted,
-            Err(error) => {
+        let Ok(encrypted) = serde_json::from_slice::<EncryptedMasterKeyBackup>(&master_json)
+            .inspect_err(|error| {
                 warn!("Failed to deserialize master key for namespace {namespace}: {error}");
                 had_download_failures = true;
-                continue;
-            }
+            })
+        else {
+            continue;
         };
 
         if encrypted.version != 1 {
@@ -165,12 +218,13 @@ pub fn try_match_namespace_with_passkey(
         if let Ok(master_key) =
             cove_cspp::master_key_crypto::decrypt_master_key(encrypted, &prf_key)
         {
-            return Ok(NamespaceMatchOutcome::Matched(NamespaceMatch {
+            let matched = NamespaceMatch {
                 namespace_id: namespace_id.clone(),
                 master_key,
                 prf_salt: encrypted.prf_salt,
                 credential_id: discovered.credential_id.clone(),
-            }));
+            };
+            return Ok(NamespaceMatchOutcome::Matched(matched));
         }
     }
 
@@ -189,51 +243,7 @@ pub fn create_new_prf_key(
     passkey: &PasskeyAccess,
     log_message: &str,
 ) -> Result<UnpersistedPrfKey, CloudBackupError> {
-    info!("{log_message}");
-    let prf_salt: [u8; 32] = rand::rng().random();
-    let credential_id = passkey
-        .create_passkey(
-            PASSKEY_RP_ID.to_string(),
-            rand::rng().random::<[u8; 16]>().to_vec(),
-            random_challenge(),
-        )
-        .map_err(map_enable_passkey_error)?;
-
-    let prf_output = passkey
-        .authenticate_with_prf(
-            PASSKEY_RP_ID.to_string(),
-            credential_id.clone(),
-            prf_salt.to_vec(),
-            random_challenge(),
-        )
-        .map_err(map_enable_passkey_error)?;
-
-    Ok(UnpersistedPrfKey { prf_key: prf_output_to_key(prf_output)?, prf_salt, credential_id })
-}
-
-fn create_new_prf_key_for_wrapper_repair(
-    passkey: &PasskeyAccess,
-) -> Result<UnpersistedPrfKey, CloudBackupError> {
-    info!("Creating new passkey for wrapper repair");
-    let prf_salt: [u8; 32] = rand::rng().random();
-    let credential_id = passkey
-        .create_passkey(
-            PASSKEY_RP_ID.to_string(),
-            rand::rng().random::<[u8; 16]>().to_vec(),
-            random_challenge(),
-        )
-        .map_err(map_wrapper_repair_passkey_error)?;
-
-    let prf_output = passkey
-        .authenticate_with_prf(
-            PASSKEY_RP_ID.to_string(),
-            credential_id.clone(),
-            prf_salt.to_vec(),
-            random_challenge(),
-        )
-        .map_err(map_wrapper_repair_passkey_error)?;
-
-    Ok(UnpersistedPrfKey { prf_key: prf_output_to_key(prf_output)?, prf_salt, credential_id })
+    passkey.create_new_prf_key(log_message)
 }
 
 fn map_wrapper_repair_passkey_error(error: PasskeyError) -> CloudBackupError {

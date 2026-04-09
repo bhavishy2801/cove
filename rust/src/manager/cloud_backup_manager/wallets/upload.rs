@@ -21,6 +21,8 @@ use super::{
     persist_enabled_cloud_backup_state, prepare_wallet_backup,
 };
 
+const STALE_UPLOADING_RETRY_THRESHOLD_SECS: u64 = 60;
+
 struct PreparedDirtyWalletUpload {
     prepared: PreparedWalletBackup,
     wallet_json: Vec<u8>,
@@ -30,8 +32,6 @@ struct DirtyWalletUploadPreparationError {
     revision_hash: Option<String>,
     source: CloudBackupError,
 }
-
-const STALE_UPLOADING_RETRY_THRESHOLD_SECS: u64 = 60;
 
 impl DirtyWalletUploadPreparationError {
     fn new(source: CloudBackupError, revision_hash: Option<String>) -> Self {
@@ -162,6 +162,7 @@ impl RustCloudBackupManager {
         else {
             return Ok(());
         };
+
         let Some(current_state) = self.recover_uploadable_blob_state(current_state)? else {
             return Ok(());
         };

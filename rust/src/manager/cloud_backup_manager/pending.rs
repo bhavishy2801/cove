@@ -218,7 +218,7 @@ impl RustCloudBackupManager {
     }
 
     fn verify_pending_uploads_once(&self) -> bool {
-        PendingUploadVerifier(self).run_once()
+        PendingUploadVerifier(self.clone()).run_once()
     }
 
     #[cfg(test)]
