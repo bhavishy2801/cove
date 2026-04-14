@@ -2,20 +2,35 @@ import SwiftUI
 
 struct OnboardingContainer: View {
     @State private var manager: OnboardingManager
+    let auth: AuthManager
     let onComplete: () -> Void
 
-    init(manager: OnboardingManager, onComplete: @escaping () -> Void) {
+    init(manager: OnboardingManager, auth: AuthManager, onComplete: @escaping () -> Void) {
         _manager = State(initialValue: manager)
+        self.auth = auth
         self.onComplete = onComplete
     }
 
     var body: some View {
-        stepView(for: manager.state.step)
-            .onChange(of: manager.isComplete) { _, complete in
-                guard complete else { return }
-                manager.app.reloadWallets()
-                onComplete()
-            }
+        CloudBackupPresentationHost(
+            app: manager.app,
+            auth: auth,
+            isCoverPresented: false
+        ) {
+            stepView(for: manager.state.step)
+                .onChange(of: manager.isComplete) { _, complete in
+                    guard complete else { return }
+                    manager.app.reloadWallets()
+                    onComplete()
+                }
+        }
+    }
+
+    private var onOpenCloudRestore: (() -> Void)? {
+        guard manager.state.shouldOfferCloudRestore else { return nil }
+        return {
+            manager.dispatch(.openCloudRestore)
+        }
     }
 
     @ViewBuilder
@@ -43,6 +58,12 @@ struct OnboardingContainer: View {
                 errorMessage: manager.cloudCheckWarning == nil ? manager.state.errorMessage : nil
             )
 
+        case .restoreUnavailable:
+            OnboardingRestoreUnavailableScreen(
+                onContinue: { manager.dispatch(.continueWithoutCloudRestore) },
+                onBack: { manager.dispatch(.back) }
+            )
+
         case .restoring:
             DeviceRestoreView(
                 onComplete: { manager.dispatch(.restoreComplete) },
@@ -60,27 +81,33 @@ struct OnboardingContainer: View {
                 onHasBitcoin: { manager.dispatch(.selectHasBitcoin(hasBitcoin: true)) }
             )
 
+        case .returningUserChoice:
+            OnboardingReturningUserChoiceScreen(
+                onRestoreFromCoveBackup: {
+                    manager.dispatch(
+                        .selectReturningUserFlow(selection: .restoreFromCoveBackup)
+                    )
+                },
+                onUseAnotherWallet: {
+                    manager.dispatch(.selectReturningUserFlow(selection: .useAnotherWallet))
+                },
+                onBack: { manager.dispatch(.back) }
+            )
+
         case .storageChoice:
             OnboardingStorageChoiceScreen(
-                onExchange: {
-                    manager.dispatch(.selectStorage(selection: .exchange))
-                },
-                onHardwareWallet: {
-                    manager.dispatch(.selectStorage(selection: .hardwareWallet))
-                },
-                onSoftwareWallet: {
-                    manager.dispatch(.selectStorage(selection: .softwareWallet))
+                onRestoreFromCoveBackup: onOpenCloudRestore,
+                onSelectStorage: { selection in
+                    manager.dispatch(.selectStorage(selection: selection))
                 },
                 onBack: { manager.dispatch(.back) }
             )
 
         case .softwareChoice:
             OnboardingSoftwareChoiceScreen(
-                onCreateWallet: {
-                    manager.dispatch(.selectSoftwareAction(selection: .createNewWallet))
-                },
-                onImportWallet: {
-                    manager.dispatch(.selectSoftwareAction(selection: .importExistingWallet))
+                onRestoreFromCoveBackup: onOpenCloudRestore,
+                onSelectSoftwareAction: { selection in
+                    manager.dispatch(.selectSoftwareAction(selection: selection))
                 },
                 onBack: { manager.dispatch(.back) }
             )
@@ -136,6 +163,7 @@ struct OnboardingContainer: View {
         case .hardwareDeviceSelection:
             OnboardingHardwareDeviceSelectionScreen(
                 selectedDevice: manager.state.hardwareDevice,
+                onRestoreFromCoveBackup: onOpenCloudRestore,
                 onSelect: { device in
                     manager.dispatch(.selectHardwareDevice(device: device))
                 },

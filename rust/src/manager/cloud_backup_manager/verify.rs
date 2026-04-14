@@ -19,9 +19,9 @@ use self::session::VerificationSession;
 use self::wrapper_repair::{WrapperRepairOperation, WrapperRepairStrategy};
 use super::wallets::persist_enabled_cloud_backup_state;
 use super::{
-    CloudBackupDetailResult, CloudBackupError, CloudBackupStatus, DeepVerificationFailure,
-    DeepVerificationReport, DeepVerificationResult, PendingVerificationCompletion,
-    RustCloudBackupManager, VerificationFailureKind,
+    BlockingCloudStep, CloudBackupDetailResult, CloudBackupError, CloudBackupStatus,
+    DeepVerificationFailure, DeepVerificationReport, DeepVerificationResult,
+    PendingVerificationCompletion, RustCloudBackupManager, VerificationFailureKind,
 };
 use crate::database::Database;
 use crate::database::cloud_backup::{PersistedCloudBackupState, PersistedCloudBackupStatus};
@@ -120,10 +120,12 @@ impl RustCloudBackupManager {
     }
 
     pub(crate) fn do_repair_passkey_wrapper(&self) -> Result<(), CloudBackupError> {
+        self.ensure_cloud_connectivity(BlockingCloudStep::RepairPasskey)?;
         self.do_repair_passkey_wrapper_with_strategy(WrapperRepairStrategy::DiscoverOrCreate)
     }
 
     pub(crate) fn do_repair_passkey_wrapper_no_discovery(&self) -> Result<(), CloudBackupError> {
+        self.ensure_cloud_connectivity(BlockingCloudStep::RepairPasskey)?;
         self.do_repair_passkey_wrapper_with_strategy(WrapperRepairStrategy::CreateNew)
     }
 
@@ -160,12 +162,23 @@ impl RustCloudBackupManager {
     }
 
     pub(crate) fn finalize_passkey_repair(&self) -> Result<(), CloudBackupError> {
+        self.ensure_cloud_connectivity(BlockingCloudStep::RepairPasskey)?;
         let namespace = self.current_namespace_id()?;
         let cloud = CloudStorage::global();
-        let wallet_record_ids =
-            cloud.list_wallet_backups(namespace).map_err_str(CloudBackupError::Cloud)?;
+        let wallet_count = match cloud.list_wallet_backups(namespace) {
+            Ok(wallet_record_ids) => wallet_record_ids.len() as u32,
+            Err(error) => {
+                warn!("Repair passkey: failed to refresh wallet backups after repair: {error}");
+                Database::global()
+                    .cloud_backup_state
+                    .get()
+                    .ok()
+                    .and_then(|state| state.wallet_count)
+                    .unwrap_or(0)
+            }
+        };
 
-        persist_enabled_cloud_backup_state(&Database::global(), wallet_record_ids.len() as u32)?;
+        persist_enabled_cloud_backup_state(&Database::global(), wallet_count)?;
         self.set_status(CloudBackupStatus::Enabled);
 
         match self.refresh_cloud_backup_detail() {
@@ -185,6 +198,7 @@ impl RustCloudBackupManager {
         &self,
         force_discoverable: bool,
     ) -> Result<DeepVerificationResult, CloudBackupError> {
+        self.ensure_cloud_connectivity(BlockingCloudStep::Verify)?;
         VerificationSession::new(self, force_discoverable)?.run()
     }
 

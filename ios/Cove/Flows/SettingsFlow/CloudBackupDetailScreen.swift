@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct CloudBackupDetailScreen: View {
-    @Environment(AppManager.self) private var app
+    @Environment(CloudBackupPresentationCoordinator.self)
+    private var cloudBackupPresentationCoordinator
     @State private var manager = CloudBackupManager.shared
     @State private var syncHealth: ICloudDriveHelper.SyncHealth = .noFiles
     @State private var showRecreateConfirmation = false
@@ -25,11 +26,6 @@ struct CloudBackupDetailScreen: View {
         return false
     }
 
-    private var isRecovering: Bool {
-        if case .recovering = manager.recovery { return true }
-        return false
-    }
-
     private var isPasskeyMissing: Bool {
         if case .passkeyMissing = manager.status { return true }
         return false
@@ -44,24 +40,8 @@ struct CloudBackupDetailScreen: View {
         manager.detail == nil && !isVerifying && !hasVerificationResult && !isCancelled
     }
 
-    private func syncCloudBackupRootPromptBlockers() {
-        app.setCloudBackupRootPromptBlocker(
-            .cloudBackupDetailBusy,
-            isActive: isVerifying || isRecovering
-        )
-        app.setCloudBackupRootPromptBlocker(
-            .cloudBackupDetailDialog,
-            isActive: showRecreateConfirmation ||
-                showReinitializeConfirmation ||
-                manager.showPasskeyChoiceDialog
-        )
-    }
-
-    private func clearCloudBackupRootPromptBlockers() {
-        app.clearCloudBackupRootPromptBlockers([
-            .cloudBackupDetailBusy,
-            .cloudBackupDetailDialog,
-        ])
+    private var hasCloudBackupPresentationBlocker: Bool {
+        showRecreateConfirmation || showReinitializeConfirmation
     }
 
     var body: some View {
@@ -81,30 +61,17 @@ struct CloudBackupDetailScreen: View {
                 manager.dispatch(action: .startVerificationDiscoverable)
             }
         }
-        .onAppear {
-            syncCloudBackupRootPromptBlockers()
-        }
         .onDisappear {
-            clearCloudBackupRootPromptBlockers()
+            cloudBackupPresentationCoordinator.setBlocker(.cloudBackupDetailDialog, active: false)
         }
         .onChange(of: manager.detail) { _, _ in
             refreshSyncHealth()
         }
         .onChange(of: manager.verification) { _, _ in
             refreshSyncHealth()
-            syncCloudBackupRootPromptBlockers()
         }
-        .onChange(of: manager.recovery) { _, _ in
-            syncCloudBackupRootPromptBlockers()
-        }
-        .onChange(of: manager.showPasskeyChoiceDialog) { _, _ in
-            syncCloudBackupRootPromptBlockers()
-        }
-        .onChange(of: showRecreateConfirmation) { _, _ in
-            syncCloudBackupRootPromptBlockers()
-        }
-        .onChange(of: showReinitializeConfirmation) { _, _ in
-            syncCloudBackupRootPromptBlockers()
+        .onChange(of: hasCloudBackupPresentationBlocker, initial: true) { _, active in
+            cloudBackupPresentationCoordinator.setBlocker(.cloudBackupDetailDialog, active: active)
         }
         .confirmationDialog(
             "Recreate Backup Index",
@@ -133,20 +100,6 @@ struct CloudBackupDetailScreen: View {
             Text(
                 "This will replace your entire cloud backup. Wallets that only exist in the current cloud backup will be lost."
             )
-        }
-        .alert(
-            "Passkey Options",
-            isPresented: $manager.showPasskeyChoiceDialog
-        ) {
-            Button("Use Existing Passkey") {
-                manager.dispatch(action: .repairPasskey)
-            }
-            Button("Create New Passkey") {
-                manager.dispatch(action: .repairPasskeyNoDiscovery)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Would you like to use an existing passkey or create a new one?")
         }
     }
 

@@ -8,7 +8,6 @@ extension WeakReconciler: CloudBackupManagerReconciler where Reconciler == Cloud
 @Observable
 final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @unchecked Sendable {
     static let shared = CloudBackupManager()
-    private static let passkeySheetDismissDelay: TimeInterval = 0.8
     private static let staleVerificationThreshold: TimeInterval = 60 * 60 * 24 * 30
 
     typealias Action = CloudBackupManagerAction
@@ -18,12 +17,8 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
     @ObservationIgnored private let rustBridge = DispatchQueue(
         label: "cove.CloudBackupManager.rustbridge", qos: .userInitiated
     )
-    @ObservationIgnored private var existingBackupWorkItem: DispatchWorkItem?
-    @ObservationIgnored private var passkeyDiscoveryWorkItem: DispatchWorkItem?
 
     var state: CloudBackupState
-    var showExistingBackupWarning = false
-    var showPasskeyChoiceDialog = false
 
     private init() {
         let rust = RustCloudBackupManager()
@@ -34,6 +29,14 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
 
     var status: CloudBackupStatus {
         state.status
+    }
+
+    var promptIntent: CloudBackupPromptIntent {
+        state.promptIntent
+    }
+
+    var connectivityHint: CloudConnectivityHint {
+        state.connectivityHint
     }
 
     var progress: (completed: UInt32, total: UInt32)? {
@@ -125,96 +128,43 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
     }
 
     func dispatch(_ action: Action) {
-        if shouldCancelPendingDialogs(for: action) {
-            cancelPendingDialogs()
-        }
-
         rustBridge.async { self.rust.dispatch(action: action) }
-    }
-
-    private func shouldCancelPendingDialogs(for action: Action) -> Bool {
-        switch action {
-        case .enableCloudBackup,
-             .enableCloudBackupForceNew,
-             .enableCloudBackupNoDiscovery,
-             .discardPendingEnableCloudBackup,
-             .repairPasskey,
-             .repairPasskeyNoDiscovery:
-            true
-        default:
-            false
-        }
-    }
-
-    private func cancelPendingDialogs() {
-        existingBackupWorkItem?.cancel()
-        existingBackupWorkItem = nil
-        passkeyDiscoveryWorkItem?.cancel()
-        passkeyDiscoveryWorkItem = nil
-    }
-
-    private func scheduleExistingBackupWarning() {
-        cancelPendingDialogs()
-
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.showExistingBackupWarning = true
-            self?.existingBackupWorkItem = nil
-        }
-        existingBackupWorkItem = workItem
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + Self.passkeySheetDismissDelay,
-            execute: workItem
-        )
-    }
-
-    private func schedulePasskeyChoiceDialog() {
-        cancelPendingDialogs()
-
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.showPasskeyChoiceDialog = true
-            self?.passkeyDiscoveryWorkItem = nil
-        }
-        passkeyDiscoveryWorkItem = workItem
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + Self.passkeySheetDismissDelay,
-            execute: workItem
-        )
     }
 
     private func apply(_ message: Message) {
         switch message {
-        case let .statusChanged(status):
+        case let .status(status):
             state.status = status
-        case let .progressChanged(progress):
+        case let .connectivityHint(connectivityHint):
+            state.connectivityHint = connectivityHint
+        case let .promptIntent(promptIntent):
+            state.promptIntent = promptIntent
+        case let .progress(progress):
             state.progress = progress
-        case let .restoreProgressChanged(progress):
+        case let .restoreProgress(progress):
             state.restoreProgress = progress
-        case let .restoreReportChanged(report):
+        case let .restoreReport(report):
             state.restoreReport = report
-        case let .syncErrorChanged(syncError):
+        case let .syncError(syncError):
             state.syncError = syncError
-        case let .verificationPromptChanged(pending):
+        case let .verificationPrompt(pending):
             state.shouldPromptVerification = pending
-        case let .verificationMetadataChanged(verificationMetadata):
+        case let .verificationMetadata(verificationMetadata):
             state.verificationMetadata = verificationMetadata
-        case let .pendingUploadVerificationChanged(pending):
+        case let .pendingUploadVerification(pending):
             state.hasPendingUploadVerification = pending
-        case let .detailChanged(detail):
+        case let .detail(detail):
             state.detail = detail
-        case let .verificationChanged(verification):
+        case let .verification(verification):
             state.verification = verification
-        case let .syncChanged(sync):
+        case let .sync(sync):
             state.sync = sync
-        case let .recoveryChanged(recovery):
+        case let .recovery(recovery):
             state.recovery = recovery
-        case let .cloudOnlyChanged(cloudOnly):
+        case let .cloudOnly(cloudOnly):
             state.cloudOnly = cloudOnly
-        case let .cloudOnlyOperationChanged(cloudOnlyOperation):
+        case let .cloudOnlyOperation(cloudOnlyOperation):
             state.cloudOnlyOperation = cloudOnlyOperation
-        case .existingBackupFound:
-            scheduleExistingBackupWarning()
-        case .passkeyDiscoveryCancelled:
-            schedulePasskeyChoiceDialog()
         }
     }
 

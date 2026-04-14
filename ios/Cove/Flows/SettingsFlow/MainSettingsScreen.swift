@@ -36,13 +36,14 @@ private enum AlertState: Equatable {
 struct MainSettingsScreen: View {
     @Environment(AppManager.self) private var app
     @Environment(AuthManager.self) private var auth
+    @Environment(CloudBackupPresentationCoordinator.self)
+    private var cloudBackupPresentationCoordinator
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
 
     // private
     @State private var sheetState: TaggedItem<SheetState>? = nil
     @State private var alertState: TaggedItem<AlertState>? = nil
-    @State private var didConfirmExistingBackupWarning = false
 
     // settings toggles for when you are in decoy mode
     @State private var isPinEnabled: Bool = true
@@ -260,7 +261,7 @@ struct MainSettingsScreen: View {
     @ViewBuilder
     var CloudBackupSection: some View {
         if !auth.isInDecoyMode() {
-            @Bindable var manager = CloudBackupManager.shared
+            let manager = CloudBackupManager.shared
 
             Section(header: Text("Cloud Backup")) {
                 switch manager.status {
@@ -281,48 +282,6 @@ struct MainSettingsScreen: View {
                 case let .error(message):
                     cloudBackupErrorContent(message: message, manager: manager)
                 }
-            }
-            .confirmationDialog(
-                "Existing Cloud Backup Found",
-                isPresented: $manager.showExistingBackupWarning
-            ) {
-                Button("Create New Backup", role: .destructive) {
-                    didConfirmExistingBackupWarning = true
-                    manager.dispatch(action: .enableCloudBackupForceNew)
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Creating a new backup will not include wallets from the previous one.")
-            }
-            .onChange(of: manager.showExistingBackupWarning) { oldValue, newValue in
-                syncCloudBackupRootPromptBlockers()
-                guard oldValue, !newValue else { return }
-
-                if !didConfirmExistingBackupWarning {
-                    manager.dispatch(action: .discardPendingEnableCloudBackup)
-                }
-
-                didConfirmExistingBackupWarning = false
-            }
-            .onChange(of: manager.showPasskeyChoiceDialog) { _, _ in
-                syncCloudBackupRootPromptBlockers()
-            }
-            .alert(
-                "Passkey Options",
-                isPresented: $manager.showPasskeyChoiceDialog
-            ) {
-                Button("Use Existing Passkey") {
-                    manager.dispatch(action: .enableCloudBackup)
-                }
-                Button("Create New Passkey") {
-                    manager.dispatch(action: .enableCloudBackupNoDiscovery)
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Would you like to use an existing passkey or create a new one?")
-            }
-            .onAppear {
-                syncCloudBackupRootPromptBlockers()
             }
         }
     }
@@ -484,23 +443,8 @@ struct MainSettingsScreen: View {
         )
     }
 
-    private func syncCloudBackupRootPromptBlockers() {
-        let manager = CloudBackupManager.shared
-        app.setCloudBackupRootPromptBlocker(
-            .settingsLocalModal,
-            isActive: sheetState != nil || alertState != nil
-        )
-        app.setCloudBackupRootPromptBlocker(
-            .settingsCloudBackupDialog,
-            isActive: manager.showExistingBackupWarning || manager.showPasskeyChoiceDialog
-        )
-    }
-
-    private func clearCloudBackupRootPromptBlockers() {
-        app.clearCloudBackupRootPromptBlockers([
-            .settingsLocalModal,
-            .settingsCloudBackupDialog,
-        ])
+    private var hasCloudBackupPresentationBlocker: Bool {
+        sheetState != nil || alertState != nil
     }
 
     @ViewBuilder
@@ -532,16 +476,12 @@ struct MainSettingsScreen: View {
         .onAppear {
             isBetaEnabled = Database().globalFlag().getBoolConfig(key: .betaFeaturesEnabled)
             isBetaImportExportEnabled = Database().globalFlag().getBoolConfig(key: .betaImportExportEnabled)
-            syncCloudBackupRootPromptBlockers()
         }
         .onDisappear {
-            clearCloudBackupRootPromptBlockers()
+            cloudBackupPresentationCoordinator.setBlocker(.settingsLocalModal, active: false)
         }
-        .onChange(of: sheetState) { _, _ in
-            syncCloudBackupRootPromptBlockers()
-        }
-        .onChange(of: alertState) { _, _ in
-            syncCloudBackupRootPromptBlockers()
+        .onChange(of: hasCloudBackupPresentationBlocker, initial: true) { _, active in
+            cloudBackupPresentationCoordinator.setBlocker(.settingsLocalModal, active: active)
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
@@ -1008,4 +948,5 @@ struct MainSettingsScreen: View {
     SettingsContainer(route: .main)
         .environment(AppManager.shared)
         .environment(AuthManager.shared)
+        .environment(CloudBackupPresentationCoordinator())
 }

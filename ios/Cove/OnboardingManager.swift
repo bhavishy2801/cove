@@ -46,6 +46,15 @@ final class OnboardingManager: AnyReconciler, OnboardingManagerReconciler, @unch
                 state.cloudBackupEnabled = enabled
             case let .secretWordsSaved(saved):
                 state.secretWordsSaved = saved
+            case let .cloudRestoreState(cloudRestoreState):
+                state.cloudRestoreState = cloudRestoreState
+            case let .cloudRestoreMessageChanged(cloudRestoreMessage):
+                state.cloudRestoreMessage = cloudRestoreMessage
+                if state.step == .restoreOffer {
+                    cloudCheckWarning = cloudRestoreMessage
+                }
+            case let .shouldOfferCloudRestore(shouldOfferCloudRestore):
+                state.shouldOfferCloudRestore = shouldOfferCloudRestore
             case let .errorMessageChanged(errorMessage):
                 state.errorMessage = errorMessage
             case .complete:
@@ -60,7 +69,7 @@ final class OnboardingManager: AnyReconciler, OnboardingManagerReconciler, @unch
 
     private func applyStep(_ step: OnboardingStep) {
         if state.step == .cloudCheck, step == .restoreOffer {
-            cloudCheckWarning = state.errorMessage
+            cloudCheckWarning = state.cloudRestoreMessage
         } else if step != .restoreOffer {
             cloudCheckWarning = nil
         }

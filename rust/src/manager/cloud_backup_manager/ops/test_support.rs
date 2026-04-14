@@ -57,6 +57,7 @@ impl cove_cspp::CsppStore for MockStoreHandle {
 }
 
 type MockDiscoverResult = Result<(Vec<u8>, Vec<u8>), PasskeyError>;
+type MockPasskeyActionResult = Arc<Mutex<Option<Result<Vec<u8>, PasskeyError>>>>;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MockKeychain {
@@ -317,17 +318,25 @@ impl CloudStorageAccess for MockCloudStorage {
 #[derive(Debug, Clone)]
 pub(crate) struct MockPasskeyProviderImpl {
     discover_result: Arc<Mutex<MockDiscoverResult>>,
+    create_result: MockPasskeyActionResult,
+    authenticate_result: MockPasskeyActionResult,
 }
 
 impl Default for MockPasskeyProviderImpl {
     fn default() -> Self {
-        Self { discover_result: Arc::new(Mutex::new(Err(PasskeyError::NoCredentialFound))) }
+        Self {
+            discover_result: Arc::new(Mutex::new(Err(PasskeyError::NoCredentialFound))),
+            create_result: Arc::new(Mutex::new(None)),
+            authenticate_result: Arc::new(Mutex::new(None)),
+        }
     }
 }
 
 impl MockPasskeyProviderImpl {
     pub(crate) fn reset(&self) {
         *self.discover_result.lock() = Err(PasskeyError::NoCredentialFound);
+        *self.create_result.lock() = None;
+        *self.authenticate_result.lock() = None;
     }
 
     pub(crate) fn set_discover_result(
@@ -335,6 +344,14 @@ impl MockPasskeyProviderImpl {
         result: Result<DiscoveredPasskeyResult, PasskeyError>,
     ) {
         *self.discover_result.lock() = result.map(|value| (value.prf_output, value.credential_id));
+    }
+
+    pub(crate) fn set_create_result(&self, result: Result<Vec<u8>, PasskeyError>) {
+        *self.create_result.lock() = Some(result);
+    }
+
+    pub(crate) fn set_authenticate_result(&self, result: Result<Vec<u8>, PasskeyError>) {
+        *self.authenticate_result.lock() = Some(result);
     }
 }
 
@@ -345,7 +362,9 @@ impl PasskeyProvider for MockPasskeyProviderImpl {
         _user_id: Vec<u8>,
         _challenge: Vec<u8>,
     ) -> Result<Vec<u8>, PasskeyError> {
-        Err(PasskeyError::CreationFailed("unexpected create_passkey call".into()))
+        self.create_result.lock().take().unwrap_or_else(|| {
+            Err(PasskeyError::CreationFailed("unexpected create_passkey call".into()))
+        })
     }
 
     fn authenticate_with_prf(
@@ -355,7 +374,9 @@ impl PasskeyProvider for MockPasskeyProviderImpl {
         _prf_salt: Vec<u8>,
         _challenge: Vec<u8>,
     ) -> Result<Vec<u8>, PasskeyError> {
-        Err(PasskeyError::AuthenticationFailed("unexpected authenticate_with_prf call".into()))
+        self.authenticate_result.lock().take().unwrap_or_else(|| {
+            Err(PasskeyError::AuthenticationFailed("unexpected authenticate_with_prf call".into()))
+        })
     }
 
     fn discover_and_authenticate_with_prf(
@@ -693,21 +714,6 @@ pub(crate) fn encrypted_wallet_backup_bytes_for_entry(
     serde_json::to_vec(&encrypted).unwrap()
 }
 
-pub(crate) fn restore_from_local_master_key_fallback<S>(
-    cloud: &CloudStorage,
-    store: &S,
-    cspp: &cove_cspp::Cspp<S>,
-) -> Result<(cove_cspp::master_key::MasterKey, String), CloudBackupError>
-where
-    S: cove_cspp::CsppStore,
-    S::Error: std::fmt::Display,
-{
-    let (master_key, namespace_id) =
-        try_restore_from_local_master_key(cloud, cspp).ok_or(CloudBackupError::PasskeyMismatch)?;
-    persist_namespace_id(store, &namespace_id)?;
-    Ok((master_key, namespace_id))
-}
-
 pub(crate) fn sample_labels_jsonl() -> &'static str {
     r#"{"type":"tx","ref":"d97bf8892657980426c879e4ab2001f09342f1ab61cfa602741a7715a3d60290","label":"last txn received","origin":"pkh([73c5da0a/44h/0h/0h])"}"#
 }
@@ -781,4 +787,44 @@ pub(crate) fn new_restore_operation_for_test(
     })
     .join()
     .expect("restore operation thread")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn passkey_create_result_is_consumed_after_first_use() {
+        let provider = MockPasskeyProviderImpl::default();
+        provider.set_create_result(Ok(vec![1, 2, 3]));
+
+        assert_eq!(
+            provider
+                .create_passkey("rp".into(), vec![1], vec![2])
+                .expect("configured create result"),
+            vec![1, 2, 3]
+        );
+        assert!(matches!(
+            provider.create_passkey("rp".into(), vec![1], vec![2]),
+            Err(PasskeyError::CreationFailed(message)) if message == "unexpected create_passkey call"
+        ));
+    }
+
+    #[test]
+    fn passkey_authenticate_result_is_consumed_after_first_use() {
+        let provider = MockPasskeyProviderImpl::default();
+        provider.set_authenticate_result(Ok(vec![4, 5, 6]));
+
+        assert_eq!(
+            provider
+                .authenticate_with_prf("rp".into(), vec![1], vec![2], vec![3])
+                .expect("configured authenticate result"),
+            vec![4, 5, 6]
+        );
+        assert!(matches!(
+            provider.authenticate_with_prf("rp".into(), vec![1], vec![2], vec![3]),
+            Err(PasskeyError::AuthenticationFailed(message))
+                if message == "unexpected authenticate_with_prf call"
+        ));
+    }
 }

@@ -7101,6 +7101,8 @@ public protocol RustCloudBackupManagerProtocol: AnyObject, Sendable {
      */
     func syncPersistedState() 
     
+    func updateConnectivityHint(hint: CloudConnectivityHint) 
+    
     /**
      * Background startup health check for cloud backup integrity
      */
@@ -7307,6 +7309,14 @@ open func state() -> CloudBackupState  {
 open func syncPersistedState()  {try! rustCall() {
     uniffi_cove_fn_method_rustcloudbackupmanager_sync_persisted_state(
             self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+open func updateConnectivityHint(hint: CloudConnectivityHint)  {try! rustCall() {
+    uniffi_cove_fn_method_rustcloudbackupmanager_update_connectivity_hint(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCloudConnectivityHint_lower(hint),$0
     )
 }
 }
@@ -13029,6 +13039,8 @@ public func FfiConverterTypeCloudBackupRestoreReport_lower(_ value: CloudBackupR
 
 public struct CloudBackupState: Equatable, Hashable {
     public var status: CloudBackupStatus
+    public var connectivityHint: CloudConnectivityHint
+    public var promptIntent: CloudBackupPromptIntent
     public var progress: CloudBackupProgress?
     public var restoreProgress: CloudBackupRestoreProgress?
     public var restoreReport: CloudBackupRestoreReport?
@@ -13045,8 +13057,10 @@ public struct CloudBackupState: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(status: CloudBackupStatus, progress: CloudBackupProgress?, restoreProgress: CloudBackupRestoreProgress?, restoreReport: CloudBackupRestoreReport?, syncError: String?, hasPendingUploadVerification: Bool, shouldPromptVerification: Bool, verificationMetadata: CloudBackupVerificationMetadata, detail: CloudBackupDetail?, verification: VerificationState, sync: SyncState, recovery: RecoveryState, cloudOnly: CloudOnlyState, cloudOnlyOperation: CloudOnlyOperation) {
+    public init(status: CloudBackupStatus, connectivityHint: CloudConnectivityHint, promptIntent: CloudBackupPromptIntent, progress: CloudBackupProgress?, restoreProgress: CloudBackupRestoreProgress?, restoreReport: CloudBackupRestoreReport?, syncError: String?, hasPendingUploadVerification: Bool, shouldPromptVerification: Bool, verificationMetadata: CloudBackupVerificationMetadata, detail: CloudBackupDetail?, verification: VerificationState, sync: SyncState, recovery: RecoveryState, cloudOnly: CloudOnlyState, cloudOnlyOperation: CloudOnlyOperation) {
         self.status = status
+        self.connectivityHint = connectivityHint
+        self.promptIntent = promptIntent
         self.progress = progress
         self.restoreProgress = restoreProgress
         self.restoreReport = restoreReport
@@ -13079,6 +13093,8 @@ public struct FfiConverterTypeCloudBackupState: FfiConverterRustBuffer {
         return
             try CloudBackupState(
                 status: FfiConverterTypeCloudBackupStatus.read(from: &buf), 
+                connectivityHint: FfiConverterTypeCloudConnectivityHint.read(from: &buf), 
+                promptIntent: FfiConverterTypeCloudBackupPromptIntent.read(from: &buf), 
                 progress: FfiConverterOptionTypeCloudBackupProgress.read(from: &buf), 
                 restoreProgress: FfiConverterOptionTypeCloudBackupRestoreProgress.read(from: &buf), 
                 restoreReport: FfiConverterOptionTypeCloudBackupRestoreReport.read(from: &buf), 
@@ -13097,6 +13113,8 @@ public struct FfiConverterTypeCloudBackupState: FfiConverterRustBuffer {
 
     public static func write(_ value: CloudBackupState, into buf: inout [UInt8]) {
         FfiConverterTypeCloudBackupStatus.write(value.status, into: &buf)
+        FfiConverterTypeCloudConnectivityHint.write(value.connectivityHint, into: &buf)
+        FfiConverterTypeCloudBackupPromptIntent.write(value.promptIntent, into: &buf)
         FfiConverterOptionTypeCloudBackupProgress.write(value.progress, into: &buf)
         FfiConverterOptionTypeCloudBackupRestoreProgress.write(value.restoreProgress, into: &buf)
         FfiConverterOptionTypeCloudBackupRestoreReport.write(value.restoreReport, into: &buf)
@@ -14283,17 +14301,23 @@ public struct OnboardingState: Equatable, Hashable {
     public var createdWords: [String]
     public var cloudBackupEnabled: Bool
     public var secretWordsSaved: Bool
+    public var cloudRestoreState: OnboardingCloudRestoreState
+    public var cloudRestoreMessage: String?
+    public var shouldOfferCloudRestore: Bool
     public var errorMessage: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(step: OnboardingStep, branch: OnboardingBranch?, hardwareDevice: OnboardingHardwareDevice?, createdWords: [String], cloudBackupEnabled: Bool, secretWordsSaved: Bool, errorMessage: String?) {
+    public init(step: OnboardingStep, branch: OnboardingBranch?, hardwareDevice: OnboardingHardwareDevice?, createdWords: [String], cloudBackupEnabled: Bool, secretWordsSaved: Bool, cloudRestoreState: OnboardingCloudRestoreState, cloudRestoreMessage: String?, shouldOfferCloudRestore: Bool, errorMessage: String?) {
         self.step = step
         self.branch = branch
         self.hardwareDevice = hardwareDevice
         self.createdWords = createdWords
         self.cloudBackupEnabled = cloudBackupEnabled
         self.secretWordsSaved = secretWordsSaved
+        self.cloudRestoreState = cloudRestoreState
+        self.cloudRestoreMessage = cloudRestoreMessage
+        self.shouldOfferCloudRestore = shouldOfferCloudRestore
         self.errorMessage = errorMessage
     }
 
@@ -14319,6 +14343,9 @@ public struct FfiConverterTypeOnboardingState: FfiConverterRustBuffer {
                 createdWords: FfiConverterSequenceString.read(from: &buf), 
                 cloudBackupEnabled: FfiConverterBool.read(from: &buf), 
                 secretWordsSaved: FfiConverterBool.read(from: &buf), 
+                cloudRestoreState: FfiConverterTypeOnboardingCloudRestoreState.read(from: &buf), 
+                cloudRestoreMessage: FfiConverterOptionString.read(from: &buf), 
+                shouldOfferCloudRestore: FfiConverterBool.read(from: &buf), 
                 errorMessage: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -14330,6 +14357,9 @@ public struct FfiConverterTypeOnboardingState: FfiConverterRustBuffer {
         FfiConverterSequenceString.write(value.createdWords, into: &buf)
         FfiConverterBool.write(value.cloudBackupEnabled, into: &buf)
         FfiConverterBool.write(value.secretWordsSaved, into: &buf)
+        FfiConverterTypeOnboardingCloudRestoreState.write(value.cloudRestoreState, into: &buf)
+        FfiConverterOptionString.write(value.cloudRestoreMessage, into: &buf)
+        FfiConverterBool.write(value.shouldOfferCloudRestore, into: &buf)
         FfiConverterOptionString.write(value.errorMessage, into: &buf)
     }
 }
@@ -18100,6 +18130,8 @@ public enum CloudBackupManagerAction: Equatable, Hashable {
     case enableCloudBackupForceNew
     case enableCloudBackupNoDiscovery
     case discardPendingEnableCloudBackup
+    case dismissPasskeyChoicePrompt
+    case dismissMissingPasskeyReminder
     case restoreFromCloudBackup
     case cancelRestore
     case startVerification
@@ -18145,35 +18177,39 @@ public struct FfiConverterTypeCloudBackupManagerAction: FfiConverterRustBuffer {
         
         case 4: return .discardPendingEnableCloudBackup
         
-        case 5: return .restoreFromCloudBackup
+        case 5: return .dismissPasskeyChoicePrompt
         
-        case 6: return .cancelRestore
+        case 6: return .dismissMissingPasskeyReminder
         
-        case 7: return .startVerification
+        case 7: return .restoreFromCloudBackup
         
-        case 8: return .startVerificationDiscoverable
+        case 8: return .cancelRestore
         
-        case 9: return .dismissVerificationPrompt
+        case 9: return .startVerification
         
-        case 10: return .recreateManifest
+        case 10: return .startVerificationDiscoverable
         
-        case 11: return .reinitializeBackup
+        case 11: return .dismissVerificationPrompt
         
-        case 12: return .repairPasskey
+        case 12: return .recreateManifest
         
-        case 13: return .repairPasskeyNoDiscovery
+        case 13: return .reinitializeBackup
         
-        case 14: return .syncUnsynced
+        case 14: return .repairPasskey
         
-        case 15: return .fetchCloudOnly
+        case 15: return .repairPasskeyNoDiscovery
         
-        case 16: return .restoreCloudWallet(recordId: try FfiConverterString.read(from: &buf)
+        case 16: return .syncUnsynced
+        
+        case 17: return .fetchCloudOnly
+        
+        case 18: return .restoreCloudWallet(recordId: try FfiConverterString.read(from: &buf)
         )
         
-        case 17: return .deleteCloudWallet(recordId: try FfiConverterString.read(from: &buf)
+        case 19: return .deleteCloudWallet(recordId: try FfiConverterString.read(from: &buf)
         )
         
-        case 18: return .refreshDetail
+        case 20: return .refreshDetail
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -18199,62 +18235,70 @@ public struct FfiConverterTypeCloudBackupManagerAction: FfiConverterRustBuffer {
             writeInt(&buf, Int32(4))
         
         
-        case .restoreFromCloudBackup:
+        case .dismissPasskeyChoicePrompt:
             writeInt(&buf, Int32(5))
         
         
-        case .cancelRestore:
+        case .dismissMissingPasskeyReminder:
             writeInt(&buf, Int32(6))
         
         
-        case .startVerification:
+        case .restoreFromCloudBackup:
             writeInt(&buf, Int32(7))
         
         
-        case .startVerificationDiscoverable:
+        case .cancelRestore:
             writeInt(&buf, Int32(8))
         
         
-        case .dismissVerificationPrompt:
+        case .startVerification:
             writeInt(&buf, Int32(9))
         
         
-        case .recreateManifest:
+        case .startVerificationDiscoverable:
             writeInt(&buf, Int32(10))
         
         
-        case .reinitializeBackup:
+        case .dismissVerificationPrompt:
             writeInt(&buf, Int32(11))
         
         
-        case .repairPasskey:
+        case .recreateManifest:
             writeInt(&buf, Int32(12))
         
         
-        case .repairPasskeyNoDiscovery:
+        case .reinitializeBackup:
             writeInt(&buf, Int32(13))
         
         
-        case .syncUnsynced:
+        case .repairPasskey:
             writeInt(&buf, Int32(14))
         
         
-        case .fetchCloudOnly:
+        case .repairPasskeyNoDiscovery:
             writeInt(&buf, Int32(15))
         
         
-        case let .restoreCloudWallet(recordId):
+        case .syncUnsynced:
             writeInt(&buf, Int32(16))
+        
+        
+        case .fetchCloudOnly:
+            writeInt(&buf, Int32(17))
+        
+        
+        case let .restoreCloudWallet(recordId):
+            writeInt(&buf, Int32(18))
             FfiConverterString.write(recordId, into: &buf)
             
         
         case let .deleteCloudWallet(recordId):
-            writeInt(&buf, Int32(17))
+            writeInt(&buf, Int32(19))
             FfiConverterString.write(recordId, into: &buf)
             
         
         case .refreshDetail:
-            writeInt(&buf, Int32(18))
+            writeInt(&buf, Int32(20))
         
         }
     }
@@ -18278,38 +18322,196 @@ public func FfiConverterTypeCloudBackupManagerAction_lower(_ value: CloudBackupM
 
 
 
+public enum CloudBackupPasskeyChoiceFlow: Equatable, Hashable {
+    
+    case enable
+    case repairPasskey
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CloudBackupPasskeyChoiceFlow: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCloudBackupPasskeyChoiceFlow: FfiConverterRustBuffer {
+    typealias SwiftType = CloudBackupPasskeyChoiceFlow
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CloudBackupPasskeyChoiceFlow {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .enable
+        
+        case 2: return .repairPasskey
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CloudBackupPasskeyChoiceFlow, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .enable:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .repairPasskey:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupPasskeyChoiceFlow_lift(_ buf: RustBuffer) throws -> CloudBackupPasskeyChoiceFlow {
+    return try FfiConverterTypeCloudBackupPasskeyChoiceFlow.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupPasskeyChoiceFlow_lower(_ value: CloudBackupPasskeyChoiceFlow) -> RustBuffer {
+    return FfiConverterTypeCloudBackupPasskeyChoiceFlow.lower(value)
+}
+
+
+
+
+public enum CloudBackupPromptIntent: Equatable, Hashable {
+    
+    case none
+    case existingBackupFound
+    case passkeyChoice(CloudBackupPasskeyChoiceFlow
+    )
+    case missingPasskeyReminder
+    case verificationPrompt
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CloudBackupPromptIntent: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCloudBackupPromptIntent: FfiConverterRustBuffer {
+    typealias SwiftType = CloudBackupPromptIntent
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CloudBackupPromptIntent {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .none
+        
+        case 2: return .existingBackupFound
+        
+        case 3: return .passkeyChoice(try FfiConverterTypeCloudBackupPasskeyChoiceFlow.read(from: &buf)
+        )
+        
+        case 4: return .missingPasskeyReminder
+        
+        case 5: return .verificationPrompt
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CloudBackupPromptIntent, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .none:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .existingBackupFound:
+            writeInt(&buf, Int32(2))
+        
+        
+        case let .passkeyChoice(v1):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeCloudBackupPasskeyChoiceFlow.write(v1, into: &buf)
+            
+        
+        case .missingPasskeyReminder:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .verificationPrompt:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupPromptIntent_lift(_ buf: RustBuffer) throws -> CloudBackupPromptIntent {
+    return try FfiConverterTypeCloudBackupPromptIntent.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupPromptIntent_lower(_ value: CloudBackupPromptIntent) -> RustBuffer {
+    return FfiConverterTypeCloudBackupPromptIntent.lower(value)
+}
+
+
+
+
 public enum CloudBackupReconcileMessage: Equatable, Hashable {
     
-    case statusChanged(CloudBackupStatus
+    case status(CloudBackupStatus
     )
-    case progressChanged(CloudBackupProgress?
+    case connectivityHint(CloudConnectivityHint
     )
-    case restoreProgressChanged(CloudBackupRestoreProgress?
+    case progress(CloudBackupProgress?
     )
-    case restoreReportChanged(CloudBackupRestoreReport?
+    case restoreProgress(CloudBackupRestoreProgress?
     )
-    case syncErrorChanged(String?
+    case restoreReport(CloudBackupRestoreReport?
     )
-    case verificationPromptChanged(Bool
+    case syncError(String?
     )
-    case verificationMetadataChanged(CloudBackupVerificationMetadata
+    case verificationPrompt(Bool
     )
-    case pendingUploadVerificationChanged(Bool
+    case verificationMetadata(CloudBackupVerificationMetadata
     )
-    case detailChanged(CloudBackupDetail?
+    case pendingUploadVerification(Bool
     )
-    case verificationChanged(VerificationState
+    case detail(CloudBackupDetail?
     )
-    case syncChanged(SyncState
+    case verification(VerificationState
     )
-    case recoveryChanged(RecoveryState
+    case sync(SyncState
     )
-    case cloudOnlyChanged(CloudOnlyState
+    case recovery(RecoveryState
     )
-    case cloudOnlyOperationChanged(CloudOnlyOperation
+    case cloudOnly(CloudOnlyState
     )
-    case existingBackupFound
-    case passkeyDiscoveryCancelled
+    case cloudOnlyOperation(CloudOnlyOperation
+    )
+    case promptIntent(CloudBackupPromptIntent
+    )
 
 
 
@@ -18331,51 +18533,53 @@ public struct FfiConverterTypeCloudBackupReconcileMessage: FfiConverterRustBuffe
         let variant: Int32 = try readInt(&buf)
         switch variant {
         
-        case 1: return .statusChanged(try FfiConverterTypeCloudBackupStatus.read(from: &buf)
+        case 1: return .status(try FfiConverterTypeCloudBackupStatus.read(from: &buf)
         )
         
-        case 2: return .progressChanged(try FfiConverterOptionTypeCloudBackupProgress.read(from: &buf)
+        case 2: return .connectivityHint(try FfiConverterTypeCloudConnectivityHint.read(from: &buf)
         )
         
-        case 3: return .restoreProgressChanged(try FfiConverterOptionTypeCloudBackupRestoreProgress.read(from: &buf)
+        case 3: return .progress(try FfiConverterOptionTypeCloudBackupProgress.read(from: &buf)
         )
         
-        case 4: return .restoreReportChanged(try FfiConverterOptionTypeCloudBackupRestoreReport.read(from: &buf)
+        case 4: return .restoreProgress(try FfiConverterOptionTypeCloudBackupRestoreProgress.read(from: &buf)
         )
         
-        case 5: return .syncErrorChanged(try FfiConverterOptionString.read(from: &buf)
+        case 5: return .restoreReport(try FfiConverterOptionTypeCloudBackupRestoreReport.read(from: &buf)
         )
         
-        case 6: return .verificationPromptChanged(try FfiConverterBool.read(from: &buf)
+        case 6: return .syncError(try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 7: return .verificationMetadataChanged(try FfiConverterTypeCloudBackupVerificationMetadata.read(from: &buf)
+        case 7: return .verificationPrompt(try FfiConverterBool.read(from: &buf)
         )
         
-        case 8: return .pendingUploadVerificationChanged(try FfiConverterBool.read(from: &buf)
+        case 8: return .verificationMetadata(try FfiConverterTypeCloudBackupVerificationMetadata.read(from: &buf)
         )
         
-        case 9: return .detailChanged(try FfiConverterOptionTypeCloudBackupDetail.read(from: &buf)
+        case 9: return .pendingUploadVerification(try FfiConverterBool.read(from: &buf)
         )
         
-        case 10: return .verificationChanged(try FfiConverterTypeVerificationState.read(from: &buf)
+        case 10: return .detail(try FfiConverterOptionTypeCloudBackupDetail.read(from: &buf)
         )
         
-        case 11: return .syncChanged(try FfiConverterTypeSyncState.read(from: &buf)
+        case 11: return .verification(try FfiConverterTypeVerificationState.read(from: &buf)
         )
         
-        case 12: return .recoveryChanged(try FfiConverterTypeRecoveryState.read(from: &buf)
+        case 12: return .sync(try FfiConverterTypeSyncState.read(from: &buf)
         )
         
-        case 13: return .cloudOnlyChanged(try FfiConverterTypeCloudOnlyState.read(from: &buf)
+        case 13: return .recovery(try FfiConverterTypeRecoveryState.read(from: &buf)
         )
         
-        case 14: return .cloudOnlyOperationChanged(try FfiConverterTypeCloudOnlyOperation.read(from: &buf)
+        case 14: return .cloudOnly(try FfiConverterTypeCloudOnlyState.read(from: &buf)
         )
         
-        case 15: return .existingBackupFound
+        case 15: return .cloudOnlyOperation(try FfiConverterTypeCloudOnlyOperation.read(from: &buf)
+        )
         
-        case 16: return .passkeyDiscoveryCancelled
+        case 16: return .promptIntent(try FfiConverterTypeCloudBackupPromptIntent.read(from: &buf)
+        )
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -18385,83 +18589,85 @@ public struct FfiConverterTypeCloudBackupReconcileMessage: FfiConverterRustBuffe
         switch value {
         
         
-        case let .statusChanged(v1):
+        case let .status(v1):
             writeInt(&buf, Int32(1))
             FfiConverterTypeCloudBackupStatus.write(v1, into: &buf)
             
         
-        case let .progressChanged(v1):
+        case let .connectivityHint(v1):
             writeInt(&buf, Int32(2))
+            FfiConverterTypeCloudConnectivityHint.write(v1, into: &buf)
+            
+        
+        case let .progress(v1):
+            writeInt(&buf, Int32(3))
             FfiConverterOptionTypeCloudBackupProgress.write(v1, into: &buf)
             
         
-        case let .restoreProgressChanged(v1):
-            writeInt(&buf, Int32(3))
+        case let .restoreProgress(v1):
+            writeInt(&buf, Int32(4))
             FfiConverterOptionTypeCloudBackupRestoreProgress.write(v1, into: &buf)
             
         
-        case let .restoreReportChanged(v1):
-            writeInt(&buf, Int32(4))
+        case let .restoreReport(v1):
+            writeInt(&buf, Int32(5))
             FfiConverterOptionTypeCloudBackupRestoreReport.write(v1, into: &buf)
             
         
-        case let .syncErrorChanged(v1):
-            writeInt(&buf, Int32(5))
+        case let .syncError(v1):
+            writeInt(&buf, Int32(6))
             FfiConverterOptionString.write(v1, into: &buf)
             
         
-        case let .verificationPromptChanged(v1):
-            writeInt(&buf, Int32(6))
+        case let .verificationPrompt(v1):
+            writeInt(&buf, Int32(7))
             FfiConverterBool.write(v1, into: &buf)
             
         
-        case let .verificationMetadataChanged(v1):
-            writeInt(&buf, Int32(7))
+        case let .verificationMetadata(v1):
+            writeInt(&buf, Int32(8))
             FfiConverterTypeCloudBackupVerificationMetadata.write(v1, into: &buf)
             
         
-        case let .pendingUploadVerificationChanged(v1):
-            writeInt(&buf, Int32(8))
+        case let .pendingUploadVerification(v1):
+            writeInt(&buf, Int32(9))
             FfiConverterBool.write(v1, into: &buf)
             
         
-        case let .detailChanged(v1):
-            writeInt(&buf, Int32(9))
+        case let .detail(v1):
+            writeInt(&buf, Int32(10))
             FfiConverterOptionTypeCloudBackupDetail.write(v1, into: &buf)
             
         
-        case let .verificationChanged(v1):
-            writeInt(&buf, Int32(10))
+        case let .verification(v1):
+            writeInt(&buf, Int32(11))
             FfiConverterTypeVerificationState.write(v1, into: &buf)
             
         
-        case let .syncChanged(v1):
-            writeInt(&buf, Int32(11))
+        case let .sync(v1):
+            writeInt(&buf, Int32(12))
             FfiConverterTypeSyncState.write(v1, into: &buf)
             
         
-        case let .recoveryChanged(v1):
-            writeInt(&buf, Int32(12))
+        case let .recovery(v1):
+            writeInt(&buf, Int32(13))
             FfiConverterTypeRecoveryState.write(v1, into: &buf)
             
         
-        case let .cloudOnlyChanged(v1):
-            writeInt(&buf, Int32(13))
+        case let .cloudOnly(v1):
+            writeInt(&buf, Int32(14))
             FfiConverterTypeCloudOnlyState.write(v1, into: &buf)
             
         
-        case let .cloudOnlyOperationChanged(v1):
-            writeInt(&buf, Int32(14))
+        case let .cloudOnlyOperation(v1):
+            writeInt(&buf, Int32(15))
             FfiConverterTypeCloudOnlyOperation.write(v1, into: &buf)
             
         
-        case .existingBackupFound:
-            writeInt(&buf, Int32(15))
-        
-        
-        case .passkeyDiscoveryCancelled:
+        case let .promptIntent(v1):
             writeInt(&buf, Int32(16))
-        
+            FfiConverterTypeCloudBackupPromptIntent.write(v1, into: &buf)
+            
         }
     }
 }
@@ -18847,6 +19053,79 @@ public func FfiConverterTypeCloudBackupWalletStatus_lift(_ buf: RustBuffer) thro
 #endif
 public func FfiConverterTypeCloudBackupWalletStatus_lower(_ value: CloudBackupWalletStatus) -> RustBuffer {
     return FfiConverterTypeCloudBackupWalletStatus.lower(value)
+}
+
+
+
+
+public enum CloudConnectivityHint: Equatable, Hashable {
+    
+    case online
+    case offline
+    case unknown
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CloudConnectivityHint: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCloudConnectivityHint: FfiConverterRustBuffer {
+    typealias SwiftType = CloudConnectivityHint
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CloudConnectivityHint {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .online
+        
+        case 2: return .offline
+        
+        case 3: return .unknown
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CloudConnectivityHint, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .online:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .offline:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .unknown:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudConnectivityHint_lift(_ buf: RustBuffer) throws -> CloudConnectivityHint {
+    return try FfiConverterTypeCloudConnectivityHint.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudConnectivityHint_lower(_ value: CloudConnectivityHint) -> RustBuffer {
+    return FfiConverterTypeCloudConnectivityHint.lower(value)
 }
 
 
@@ -20983,6 +21262,7 @@ public enum GlobalConfigKey: Equatable, Hashable {
     case mainSelectedWalletId
     case decoySelectedWalletId
     case lockedAt
+    case onboardingProgress
 
 
 
@@ -21030,6 +21310,8 @@ public struct FfiConverterTypeGlobalConfigKey: FfiConverterRustBuffer {
         case 12: return .decoySelectedWalletId
         
         case 13: return .lockedAt
+        
+        case 14: return .onboardingProgress
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -21090,6 +21372,10 @@ public struct FfiConverterTypeGlobalConfigKey: FfiConverterRustBuffer {
         
         case .lockedAt:
             writeInt(&buf, Int32(13))
+        
+        
+        case .onboardingProgress:
+            writeInt(&buf, Int32(14))
         
         }
     }
@@ -23557,6 +23843,8 @@ public enum OnboardingAction: Equatable, Hashable {
     case continueFromWelcome
     case selectHasBitcoin(hasBitcoin: Bool
     )
+    case selectReturningUserFlow(selection: OnboardingReturningUserSelection
+    )
     case selectStorage(selection: OnboardingStorageSelection
     )
     case selectSoftwareAction(selection: OnboardingSoftwareSelection
@@ -23576,8 +23864,10 @@ public enum OnboardingAction: Equatable, Hashable {
     case hardwareImportCompleted(walletId: WalletId
     )
     case backupImportCompleted
+    case openCloudRestore
     case startRestore
     case skipRestore
+    case continueWithoutCloudRestore
     case restoreComplete
     case restoreFailed(error: String
     )
@@ -23610,53 +23900,60 @@ public struct FfiConverterTypeOnboardingAction: FfiConverterRustBuffer {
         case 2: return .selectHasBitcoin(hasBitcoin: try FfiConverterBool.read(from: &buf)
         )
         
-        case 3: return .selectStorage(selection: try FfiConverterTypeOnboardingStorageSelection.read(from: &buf)
+        case 3: return .selectReturningUserFlow(selection: try FfiConverterTypeOnboardingReturningUserSelection.read(from: &buf)
         )
         
-        case 4: return .selectSoftwareAction(selection: try FfiConverterTypeOnboardingSoftwareSelection.read(from: &buf)
+        case 4: return .selectStorage(selection: try FfiConverterTypeOnboardingStorageSelection.read(from: &buf)
         )
         
-        case 5: return .continueWalletCreation
-        
-        case 6: return .showSecretWords
-        
-        case 7: return .secretWordsSaved
-        
-        case 8: return .openCloudBackup
-        
-        case 9: return .cloudBackupEnabled
-        
-        case 10: return .skipCloudBackup
-        
-        case 11: return .continueFromBackup
-        
-        case 12: return .continueFromExchangeFunding
-        
-        case 13: return .selectHardwareDevice(device: try FfiConverterTypeOnboardingHardwareDevice.read(from: &buf)
+        case 5: return .selectSoftwareAction(selection: try FfiConverterTypeOnboardingSoftwareSelection.read(from: &buf)
         )
         
-        case 14: return .softwareImportCompleted(walletId: try FfiConverterTypeWalletId.read(from: &buf)
+        case 6: return .continueWalletCreation
+        
+        case 7: return .showSecretWords
+        
+        case 8: return .secretWordsSaved
+        
+        case 9: return .openCloudBackup
+        
+        case 10: return .cloudBackupEnabled
+        
+        case 11: return .skipCloudBackup
+        
+        case 12: return .continueFromBackup
+        
+        case 13: return .continueFromExchangeFunding
+        
+        case 14: return .selectHardwareDevice(device: try FfiConverterTypeOnboardingHardwareDevice.read(from: &buf)
         )
         
-        case 15: return .hardwareImportCompleted(walletId: try FfiConverterTypeWalletId.read(from: &buf)
+        case 15: return .softwareImportCompleted(walletId: try FfiConverterTypeWalletId.read(from: &buf)
         )
         
-        case 16: return .backupImportCompleted
-        
-        case 17: return .startRestore
-        
-        case 18: return .skipRestore
-        
-        case 19: return .restoreComplete
-        
-        case 20: return .restoreFailed(error: try FfiConverterString.read(from: &buf)
+        case 16: return .hardwareImportCompleted(walletId: try FfiConverterTypeWalletId.read(from: &buf)
         )
         
-        case 21: return .verifyWordsCompleted
+        case 17: return .backupImportCompleted
         
-        case 22: return .acceptTerms
+        case 18: return .openCloudRestore
         
-        case 23: return .back
+        case 19: return .startRestore
+        
+        case 20: return .skipRestore
+        
+        case 21: return .continueWithoutCloudRestore
+        
+        case 22: return .restoreComplete
+        
+        case 23: return .restoreFailed(error: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 24: return .verifyWordsCompleted
+        
+        case 25: return .acceptTerms
+        
+        case 26: return .back
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -23675,94 +23972,107 @@ public struct FfiConverterTypeOnboardingAction: FfiConverterRustBuffer {
             FfiConverterBool.write(hasBitcoin, into: &buf)
             
         
-        case let .selectStorage(selection):
+        case let .selectReturningUserFlow(selection):
             writeInt(&buf, Int32(3))
+            FfiConverterTypeOnboardingReturningUserSelection.write(selection, into: &buf)
+            
+        
+        case let .selectStorage(selection):
+            writeInt(&buf, Int32(4))
             FfiConverterTypeOnboardingStorageSelection.write(selection, into: &buf)
             
         
         case let .selectSoftwareAction(selection):
-            writeInt(&buf, Int32(4))
+            writeInt(&buf, Int32(5))
             FfiConverterTypeOnboardingSoftwareSelection.write(selection, into: &buf)
             
         
         case .continueWalletCreation:
-            writeInt(&buf, Int32(5))
-        
-        
-        case .showSecretWords:
             writeInt(&buf, Int32(6))
         
         
-        case .secretWordsSaved:
+        case .showSecretWords:
             writeInt(&buf, Int32(7))
         
         
-        case .openCloudBackup:
+        case .secretWordsSaved:
             writeInt(&buf, Int32(8))
         
         
-        case .cloudBackupEnabled:
+        case .openCloudBackup:
             writeInt(&buf, Int32(9))
         
         
-        case .skipCloudBackup:
+        case .cloudBackupEnabled:
             writeInt(&buf, Int32(10))
         
         
-        case .continueFromBackup:
+        case .skipCloudBackup:
             writeInt(&buf, Int32(11))
         
         
-        case .continueFromExchangeFunding:
+        case .continueFromBackup:
             writeInt(&buf, Int32(12))
         
         
-        case let .selectHardwareDevice(device):
+        case .continueFromExchangeFunding:
             writeInt(&buf, Int32(13))
+        
+        
+        case let .selectHardwareDevice(device):
+            writeInt(&buf, Int32(14))
             FfiConverterTypeOnboardingHardwareDevice.write(device, into: &buf)
             
         
         case let .softwareImportCompleted(walletId):
-            writeInt(&buf, Int32(14))
-            FfiConverterTypeWalletId.write(walletId, into: &buf)
-            
-        
-        case let .hardwareImportCompleted(walletId):
             writeInt(&buf, Int32(15))
             FfiConverterTypeWalletId.write(walletId, into: &buf)
             
         
-        case .backupImportCompleted:
+        case let .hardwareImportCompleted(walletId):
             writeInt(&buf, Int32(16))
+            FfiConverterTypeWalletId.write(walletId, into: &buf)
+            
         
-        
-        case .startRestore:
+        case .backupImportCompleted:
             writeInt(&buf, Int32(17))
         
         
-        case .skipRestore:
+        case .openCloudRestore:
             writeInt(&buf, Int32(18))
         
         
-        case .restoreComplete:
+        case .startRestore:
             writeInt(&buf, Int32(19))
         
         
-        case let .restoreFailed(error):
+        case .skipRestore:
             writeInt(&buf, Int32(20))
+        
+        
+        case .continueWithoutCloudRestore:
+            writeInt(&buf, Int32(21))
+        
+        
+        case .restoreComplete:
+            writeInt(&buf, Int32(22))
+        
+        
+        case let .restoreFailed(error):
+            writeInt(&buf, Int32(23))
             FfiConverterString.write(error, into: &buf)
             
         
         case .verifyWordsCompleted:
-            writeInt(&buf, Int32(21))
+            writeInt(&buf, Int32(24))
         
         
         case .acceptTerms:
-            writeInt(&buf, Int32(22))
+            writeInt(&buf, Int32(25))
         
         
         case .back:
-            writeInt(&buf, Int32(23))
+            writeInt(&buf, Int32(26))
         
         }
     }
@@ -23873,6 +24183,86 @@ public func FfiConverterTypeOnboardingBranch_lower(_ value: OnboardingBranch) ->
 
 
 
+public enum OnboardingCloudRestoreState: Equatable, Hashable {
+    
+    case checking
+    case backupFound
+    case noBackupFound
+    case inconclusive
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension OnboardingCloudRestoreState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOnboardingCloudRestoreState: FfiConverterRustBuffer {
+    typealias SwiftType = OnboardingCloudRestoreState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OnboardingCloudRestoreState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .checking
+        
+        case 2: return .backupFound
+        
+        case 3: return .noBackupFound
+        
+        case 4: return .inconclusive
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: OnboardingCloudRestoreState, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .checking:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .backupFound:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .noBackupFound:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .inconclusive:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOnboardingCloudRestoreState_lift(_ buf: RustBuffer) throws -> OnboardingCloudRestoreState {
+    return try FfiConverterTypeOnboardingCloudRestoreState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOnboardingCloudRestoreState_lower(_ value: OnboardingCloudRestoreState) -> RustBuffer {
+    return FfiConverterTypeOnboardingCloudRestoreState.lower(value)
+}
+
+
+
+
 public enum OnboardingHardwareDevice: Equatable, Hashable {
     
     case coldcard
@@ -23967,6 +24357,12 @@ public enum OnboardingReconcileMessage: Equatable, Hashable {
     )
     case secretWordsSaved(Bool
     )
+    case cloudRestoreState(OnboardingCloudRestoreState
+    )
+    case cloudRestoreMessageChanged(String?
+    )
+    case shouldOfferCloudRestore(Bool
+    )
     case errorMessageChanged(String?
     )
     case complete
@@ -24009,10 +24405,19 @@ public struct FfiConverterTypeOnboardingReconcileMessage: FfiConverterRustBuffer
         case 6: return .secretWordsSaved(try FfiConverterBool.read(from: &buf)
         )
         
-        case 7: return .errorMessageChanged(try FfiConverterOptionString.read(from: &buf)
+        case 7: return .cloudRestoreState(try FfiConverterTypeOnboardingCloudRestoreState.read(from: &buf)
         )
         
-        case 8: return .complete
+        case 8: return .cloudRestoreMessageChanged(try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 9: return .shouldOfferCloudRestore(try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 10: return .errorMessageChanged(try FfiConverterOptionString.read(from: &buf)
+        )
+        
+        case 11: return .complete
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -24052,13 +24457,28 @@ public struct FfiConverterTypeOnboardingReconcileMessage: FfiConverterRustBuffer
             FfiConverterBool.write(v1, into: &buf)
             
         
-        case let .errorMessageChanged(v1):
+        case let .cloudRestoreState(v1):
             writeInt(&buf, Int32(7))
+            FfiConverterTypeOnboardingCloudRestoreState.write(v1, into: &buf)
+            
+        
+        case let .cloudRestoreMessageChanged(v1):
+            writeInt(&buf, Int32(8))
+            FfiConverterOptionString.write(v1, into: &buf)
+            
+        
+        case let .shouldOfferCloudRestore(v1):
+            writeInt(&buf, Int32(9))
+            FfiConverterBool.write(v1, into: &buf)
+            
+        
+        case let .errorMessageChanged(v1):
+            writeInt(&buf, Int32(10))
             FfiConverterOptionString.write(v1, into: &buf)
             
         
         case .complete:
-            writeInt(&buf, Int32(8))
+            writeInt(&buf, Int32(11))
         
         }
     }
@@ -24077,6 +24497,72 @@ public func FfiConverterTypeOnboardingReconcileMessage_lift(_ buf: RustBuffer) t
 #endif
 public func FfiConverterTypeOnboardingReconcileMessage_lower(_ value: OnboardingReconcileMessage) -> RustBuffer {
     return FfiConverterTypeOnboardingReconcileMessage.lower(value)
+}
+
+
+
+
+public enum OnboardingReturningUserSelection: Equatable, Hashable {
+    
+    case restoreFromCoveBackup
+    case useAnotherWallet
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension OnboardingReturningUserSelection: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOnboardingReturningUserSelection: FfiConverterRustBuffer {
+    typealias SwiftType = OnboardingReturningUserSelection
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OnboardingReturningUserSelection {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .restoreFromCoveBackup
+        
+        case 2: return .useAnotherWallet
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: OnboardingReturningUserSelection, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .restoreFromCoveBackup:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .useAnotherWallet:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOnboardingReturningUserSelection_lift(_ buf: RustBuffer) throws -> OnboardingReturningUserSelection {
+    return try FfiConverterTypeOnboardingReturningUserSelection.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOnboardingReturningUserSelection_lower(_ value: OnboardingReturningUserSelection) -> RustBuffer {
+    return FfiConverterTypeOnboardingReturningUserSelection.lower(value)
 }
 
 
@@ -24152,9 +24638,11 @@ public enum OnboardingStep: Equatable, Hashable {
     
     case cloudCheck
     case restoreOffer
+    case restoreUnavailable
     case restoring
     case welcome
     case bitcoinChoice
+    case returningUserChoice
     case storageChoice
     case softwareChoice
     case creatingWallet
@@ -24192,35 +24680,39 @@ public struct FfiConverterTypeOnboardingStep: FfiConverterRustBuffer {
         
         case 2: return .restoreOffer
         
-        case 3: return .restoring
+        case 3: return .restoreUnavailable
         
-        case 4: return .welcome
+        case 4: return .restoring
         
-        case 5: return .bitcoinChoice
+        case 5: return .welcome
         
-        case 6: return .storageChoice
+        case 6: return .bitcoinChoice
         
-        case 7: return .softwareChoice
+        case 7: return .returningUserChoice
         
-        case 8: return .creatingWallet
+        case 8: return .storageChoice
         
-        case 9: return .backupWallet
+        case 9: return .softwareChoice
         
-        case 10: return .cloudBackup
+        case 10: return .creatingWallet
         
-        case 11: return .secretWords
+        case 11: return .backupWallet
         
-        case 12: return .verifyWords
+        case 12: return .cloudBackup
         
-        case 13: return .exchangeFunding
+        case 13: return .secretWords
         
-        case 14: return .hardwareDeviceSelection
+        case 14: return .verifyWords
         
-        case 15: return .hardwareImport
+        case 15: return .exchangeFunding
         
-        case 16: return .softwareImport
+        case 16: return .hardwareDeviceSelection
         
-        case 17: return .terms
+        case 17: return .hardwareImport
+        
+        case 18: return .softwareImport
+        
+        case 19: return .terms
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -24238,64 +24730,72 @@ public struct FfiConverterTypeOnboardingStep: FfiConverterRustBuffer {
             writeInt(&buf, Int32(2))
         
         
-        case .restoring:
+        case .restoreUnavailable:
             writeInt(&buf, Int32(3))
         
         
-        case .welcome:
+        case .restoring:
             writeInt(&buf, Int32(4))
         
         
-        case .bitcoinChoice:
+        case .welcome:
             writeInt(&buf, Int32(5))
         
         
-        case .storageChoice:
+        case .bitcoinChoice:
             writeInt(&buf, Int32(6))
         
         
-        case .softwareChoice:
+        case .returningUserChoice:
             writeInt(&buf, Int32(7))
         
         
-        case .creatingWallet:
+        case .storageChoice:
             writeInt(&buf, Int32(8))
         
         
-        case .backupWallet:
+        case .softwareChoice:
             writeInt(&buf, Int32(9))
         
         
-        case .cloudBackup:
+        case .creatingWallet:
             writeInt(&buf, Int32(10))
         
         
-        case .secretWords:
+        case .backupWallet:
             writeInt(&buf, Int32(11))
         
         
-        case .verifyWords:
+        case .cloudBackup:
             writeInt(&buf, Int32(12))
         
         
-        case .exchangeFunding:
+        case .secretWords:
             writeInt(&buf, Int32(13))
         
         
-        case .hardwareDeviceSelection:
+        case .verifyWords:
             writeInt(&buf, Int32(14))
         
         
-        case .hardwareImport:
+        case .exchangeFunding:
             writeInt(&buf, Int32(15))
         
         
-        case .softwareImport:
+        case .hardwareDeviceSelection:
             writeInt(&buf, Int32(16))
         
         
-        case .terms:
+        case .hardwareImport:
             writeInt(&buf, Int32(17))
+        
+        
+        case .softwareImport:
+            writeInt(&buf, Int32(18))
+        
+        
+        case .terms:
+            writeInt(&buf, Int32(19))
         
         }
     }
@@ -35931,6 +36431,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_sync_persisted_state() != 19758) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_method_rustcloudbackupmanager_update_connectivity_hint() != 42789) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_verify_backup_integrity() != 47801) {

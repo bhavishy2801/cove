@@ -420,8 +420,14 @@ impl CloudBackupRuntimeActor {
 
         cove_tokio::task::spawn_blocking(move || {
             let upload_result = manager.do_upload_wallet_if_dirty(&wallet_id);
+            let deferred = matches!(upload_result, Err(super::CloudBackupError::Deferred(_)));
             let error_message = upload_result.as_ref().err().map(ToString::to_string);
-            send!(addr.complete_wallet_upload(wallet_id, upload_result.is_ok(), error_message));
+            send!(addr.complete_wallet_upload(
+                wallet_id,
+                upload_result.is_ok(),
+                error_message,
+                deferred
+            ));
         });
 
         Produces::ok(())
@@ -432,20 +438,11 @@ impl CloudBackupRuntimeActor {
         wallet_id: WalletId,
         succeeded: bool,
         error_message: Option<String>,
+        deferred: bool,
     ) -> ActorResult<()> {
         let Some(manager) = self.manager() else { return Produces::ok(()) };
 
-        self.active_wallet_uploads.remove(&wallet_id);
-
-        if let Some(error_message) = error_message {
-            error!("Cloud backup upload failed for wallet_id={wallet_id}: {error_message}");
-            manager.set_sync_error(Some(error_message));
-        } else if succeeded {
-            self.reset_wallet_upload_retry_count(&wallet_id);
-            manager.clear_sync_error_if_no_failed_wallet_uploads();
-        }
-
-        self.schedule_wallet_upload_follow_up(wallet_id);
+        self.finish_wallet_upload(&manager, wallet_id, succeeded, error_message, deferred);
         Produces::ok(())
     }
 
@@ -464,20 +461,47 @@ impl CloudBackupRuntimeActor {
         };
 
         let upload_result = manager.do_upload_wallet_if_dirty(&wallet_id);
-        if let Err(error) = &upload_result {
-            error!("Cloud backup upload failed for wallet_id={wallet_id}: {error}");
-            manager.set_sync_error(Some(error.to_string()));
-        }
+        let deferred = matches!(upload_result, Err(super::CloudBackupError::Deferred(_)));
+        let error_message = upload_result.err().map(|error| error.to_string());
+        self.finish_wallet_upload(
+            &manager,
+            wallet_id,
+            error_message.is_none(),
+            error_message,
+            deferred,
+        );
+        Produces::ok(())
+    }
 
+    fn finish_wallet_upload(
+        &mut self,
+        manager: &RustCloudBackupManager,
+        wallet_id: WalletId,
+        succeeded: bool,
+        error_message: Option<String>,
+        deferred: bool,
+    ) {
         self.active_wallet_uploads.remove(&wallet_id);
 
-        if upload_result.is_ok() {
+        if let Some(error_message) = error_message {
+            if deferred {
+                info!("Cloud backup upload deferred for wallet_id={wallet_id}: {error_message}");
+                manager.set_pending_upload_verification(
+                    manager.has_pending_cloud_upload_verification(),
+                );
+                let delay = self.next_wallet_upload_retry_delay(&wallet_id);
+                self.schedule_wallet_upload_after(wallet_id, delay);
+                return;
+            }
+
+            error!("Cloud backup upload failed for wallet_id={wallet_id}: {error_message}");
+            manager.set_sync_error(Some(error_message));
+        } else if succeeded {
             self.reset_wallet_upload_retry_count(&wallet_id);
             manager.clear_sync_error_if_no_failed_wallet_uploads();
         }
 
         self.schedule_wallet_upload_follow_up(wallet_id);
-        Produces::ok(())
     }
 
     pub async fn resume_wallet_uploads_from_persisted_state(&mut self) -> ActorResult<()> {
@@ -614,14 +638,6 @@ impl CloudBackupRuntimeActor {
         self.wallet_upload_retry_counts.clear();
         self.active_wallet_uploads.clear();
         Produces::ok(())
-    }
-
-    #[cfg(test)]
-    pub async fn has_upload_debouncer_for_test(
-        &mut self,
-        wallet_id: WalletId,
-    ) -> ActorResult<bool> {
-        Produces::ok(self.wallet_upload_debouncers.contains_key(&wallet_id))
     }
 }
 
