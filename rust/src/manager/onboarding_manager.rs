@@ -42,7 +42,6 @@ pub enum OnboardingStep {
     SecretWords,
     VerifyWords,
     ExchangeFunding,
-    HardwareDeviceSelection,
     HardwareImport,
     SoftwareImport,
     Terms,
@@ -76,14 +75,6 @@ pub enum OnboardingReturningUserSelection {
     UseAnotherWallet,
 }
 
-#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, uniffi::Enum)]
-pub enum OnboardingHardwareDevice {
-    Coldcard,
-    Ledger,
-    Trezor,
-    Other,
-}
-
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, Default, uniffi::Enum)]
 pub enum OnboardingCloudRestoreState {
     #[default]
@@ -97,7 +88,6 @@ pub enum OnboardingCloudRestoreState {
 pub struct OnboardingState {
     pub step: OnboardingStep,
     pub branch: Option<OnboardingBranch>,
-    pub hardware_device: Option<OnboardingHardwareDevice>,
     pub created_words: Vec<String>,
     pub cloud_backup_enabled: bool,
     pub secret_words_saved: bool,
@@ -122,7 +112,6 @@ pub enum OnboardingAction {
     SkipCloudBackup,
     ContinueFromBackup,
     ContinueFromExchangeFunding,
-    SelectHardwareDevice { device: OnboardingHardwareDevice },
     SoftwareImportCompleted { wallet_id: WalletId },
     HardwareImportCompleted { wallet_id: WalletId },
     OpenCloudRestore,
@@ -142,7 +131,6 @@ type Message = OnboardingReconcileMessage;
 pub enum OnboardingReconcileMessage {
     Step(OnboardingStep),
     Branch(Option<OnboardingBranch>),
-    HardwareDevice(Option<OnboardingHardwareDevice>),
     CreatedWords(Vec<String>),
     CloudBackupEnabled(bool),
     SecretWordsSaved(bool),
@@ -238,12 +226,7 @@ enum FlowState {
     SecretWords(CreatedWalletFlow),
     VerifyWords(CreatedWalletFlow),
     ExchangeFunding(CreatedWalletFlow),
-    HardwareDeviceSelection {
-        selected_device: Option<OnboardingHardwareDevice>,
-    },
-    HardwareImport {
-        device: OnboardingHardwareDevice,
-    },
+    HardwareImport,
     SoftwareImport,
     Terms {
         context: TermsContext,
@@ -296,7 +279,6 @@ enum RestoreOrigin {
     ReturningUserChoice,
     StorageChoice,
     SoftwareChoice,
-    HardwareDeviceSelection,
 }
 
 #[derive(Debug, Clone)]
@@ -621,9 +603,6 @@ impl InternalState {
         if self.ui.branch != next_ui.branch {
             deferred.queue(Message::Branch(next_ui.branch));
         }
-        if self.ui.hardware_device != next_ui.hardware_device {
-            deferred.queue(Message::HardwareDevice(next_ui.hardware_device));
-        }
         if self.ui.created_words != next_ui.created_words {
             deferred.queue(Message::CreatedWords(next_ui.created_words.clone()));
         }
@@ -713,7 +692,10 @@ impl FlowState {
                 OnboardingAction::SelectStorage {
                     selection: OnboardingStorageSelection::HardwareWallet,
                 },
-            ) => (Self::HardwareDeviceSelection { selected_device: None }, TransitionCommand::None),
+            ) => {
+                *restore_offer_allowed = false;
+                (Self::HardwareImport, TransitionCommand::None)
+            }
             (
                 Self::StorageChoice,
                 OnboardingAction::SelectStorage {
@@ -807,21 +789,11 @@ impl FlowState {
                     (Self::VerifyWords(flow), TransitionCommand::None)
                 }
             }
-            (
-                Self::HardwareDeviceSelection { .. },
-                OnboardingAction::SelectHardwareDevice { device },
-            ) => {
-                *restore_offer_allowed = false;
-                (Self::HardwareImport { device }, TransitionCommand::None)
-            }
             (Self::SoftwareImport, OnboardingAction::SoftwareImportCompleted { wallet_id }) => (
                 Self::CloudBackup(CloudBackupFlow::SoftwareImport { wallet_id }),
                 TransitionCommand::None,
             ),
-            (
-                Self::HardwareImport { .. },
-                OnboardingAction::HardwareImportCompleted { wallet_id },
-            ) => {
+            (Self::HardwareImport, OnboardingAction::HardwareImportCompleted { wallet_id }) => {
                 (Self::terms(TermsContext::SelectWallet(wallet_id), None), TransitionCommand::None)
             }
             (Self::StorageChoice, OnboardingAction::OpenCloudRestore) => (
@@ -830,13 +802,6 @@ impl FlowState {
             ),
             (Self::SoftwareChoice, OnboardingAction::OpenCloudRestore) => (
                 Self::restore_entry_for(cloud_restore_discovery, RestoreOrigin::SoftwareChoice),
-                TransitionCommand::None,
-            ),
-            (Self::HardwareDeviceSelection { .. }, OnboardingAction::OpenCloudRestore) => (
-                Self::restore_entry_for(
-                    cloud_restore_discovery,
-                    RestoreOrigin::HardwareDeviceSelection,
-                ),
                 TransitionCommand::None,
             ),
             (Self::RestoreOffer { origin, .. }, OnboardingAction::StartRestore) => {
@@ -882,13 +847,9 @@ impl FlowState {
             (Self::SoftwareImport, OnboardingAction::Back) => {
                 (Self::SoftwareChoice, TransitionCommand::None)
             }
-            (Self::HardwareDeviceSelection { .. }, OnboardingAction::Back) => {
+            (Self::HardwareImport, OnboardingAction::Back) => {
                 (Self::StorageChoice, TransitionCommand::None)
             }
-            (Self::HardwareImport { device }, OnboardingAction::Back) => (
-                Self::HardwareDeviceSelection { selected_device: Some(device) },
-                TransitionCommand::None,
-            ),
             (Self::RestoreUnavailable { origin }, OnboardingAction::Back) => {
                 (origin.flow_state(), TransitionCommand::None)
             }
@@ -1117,16 +1078,9 @@ impl FlowState {
                 cloud_restore_discovery,
                 should_offer_cloud_restore,
             ),
-            Self::HardwareDeviceSelection { selected_device } => {
-                state.step = OnboardingStep::HardwareDeviceSelection;
-                state.branch = Some(OnboardingBranch::Hardware);
-                state.hardware_device = *selected_device;
-                state
-            }
-            Self::HardwareImport { device } => {
+            Self::HardwareImport => {
                 state.step = OnboardingStep::HardwareImport;
                 state.branch = Some(OnboardingBranch::Hardware);
-                state.hardware_device = Some(*device);
                 state
             }
             Self::SoftwareImport => {
@@ -1209,7 +1163,6 @@ impl FlowState {
         OnboardingState {
             step,
             branch: Some(flow.branch),
-            hardware_device: None,
             created_words: flow.created_words.clone(),
             cloud_backup_enabled: flow.cloud_backup_enabled,
             secret_words_saved: flow.secret_words_saved,
@@ -1377,9 +1330,6 @@ impl RestoreOrigin {
             Self::ReturningUserChoice => FlowState::ReturningUserChoice,
             Self::StorageChoice => FlowState::StorageChoice,
             Self::SoftwareChoice => FlowState::SoftwareChoice,
-            Self::HardwareDeviceSelection => {
-                FlowState::HardwareDeviceSelection { selected_device: None }
-            }
         }
     }
 
@@ -1523,8 +1473,26 @@ mod tests {
     }
 
     #[test]
-    fn hardware_back_preserves_selected_device() {
-        let mut flow = FlowState::HardwareImport { device: OnboardingHardwareDevice::Ledger };
+    fn selecting_hardware_wallet_goes_to_hardware_import() {
+        let mut flow = FlowState::StorageChoice;
+        let mut restore_offer_allowed = false;
+
+        let command = flow.apply_user_action(
+            OnboardingAction::SelectStorage {
+                selection: OnboardingStorageSelection::HardwareWallet,
+            },
+            CloudRestoreDiscovery::Checking,
+            &mut restore_offer_allowed,
+        );
+
+        assert_eq!(command, TransitionCommand::None);
+        assert!(matches!(flow, FlowState::HardwareImport));
+        assert!(!restore_offer_allowed);
+    }
+
+    #[test]
+    fn hardware_back_returns_to_storage_choice() {
+        let mut flow = FlowState::HardwareImport;
         let mut restore_offer_allowed = false;
 
         flow.apply_user_action(
@@ -1533,12 +1501,7 @@ mod tests {
             &mut restore_offer_allowed,
         );
 
-        match flow {
-            FlowState::HardwareDeviceSelection {
-                selected_device: Some(OnboardingHardwareDevice::Ledger),
-            } => {}
-            other => panic!("unexpected flow state: {other:?}"),
-        }
+        assert!(matches!(flow, FlowState::StorageChoice));
     }
 
     #[test]

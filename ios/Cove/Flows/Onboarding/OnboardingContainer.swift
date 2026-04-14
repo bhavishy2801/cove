@@ -161,19 +161,8 @@ struct OnboardingContainer: View {
                 onContinue: { manager.dispatch(.continueFromExchangeFunding) }
             )
 
-        case .hardwareDeviceSelection:
-            OnboardingHardwareDeviceSelectionScreen(
-                selectedDevice: manager.state.hardwareDevice,
-                onRestoreFromCoveBackup: onOpenCloudRestore,
-                onSelect: { device in
-                    manager.dispatch(.selectHardwareDevice(device: device))
-                },
-                onBack: { manager.dispatch(.back) }
-            )
-
         case .hardwareImport:
             OnboardingHardwareImportFlowView(
-                device: manager.state.hardwareDevice,
                 onImported: { walletId in
                     manager.dispatch(.hardwareImportCompleted(walletId: walletId))
                 },
