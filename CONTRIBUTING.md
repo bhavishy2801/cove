@@ -10,15 +10,17 @@ That balance matters whenever adding new functionality. Every feature must earn 
 
 - [Rust](https://rustup.rs)
 - [Just](https://github.com/casey/just) (`cargo install just`)
+- `cargo-nextest` (`cargo install cargo-nextest`)
 - **iOS**: Xcode 16.0+, swiftformat
-- **Android**: Android Studio + NDK, ktlint
+- **Android**: Android Studio + NDK, Java/JDK
+- **Optional**: bacon, watchexec
 
 ## Quick Start
 
 1. Clone the repository
 2. Build the Rust library and bindings:
-   - iOS: `just build-ios` (simulator) or `just bidd` (device)
-   - Android: `just build-android`
+   - iOS: `just build-ios` (`just bi`) for simulator or `just build-ios-debug-device` (`just bidd`) for device
+   - Android: `just build-android` (`just ba`)
 3. Open in Xcode (`ios/Cove.xcodeproj`) or Android Studio (`android/`)
 4. Build and run
 
@@ -27,7 +29,7 @@ That balance matters whenever adding new functionality. Every feature must earn 
 ### iOS
 
 ```bash
-just build-ios-release    # or just bir
+just build-ios-release    # alias: just bir
 ```
 
 Then archive and distribute via Xcode (Product → Archive).
@@ -35,7 +37,7 @@ Then archive and distribute via Xcode (Product → Archive).
 ### Android
 
 ```bash
-just build-android-release    # or just bar
+just build-android-release    # alias: just bar
 ```
 
 Then build a signed APK/AAB via Android Studio (Build → Generate Signed Bundle/APK).
@@ -46,23 +48,29 @@ Then build a signed APK/AAB via Android Studio (Build → Generate Signed Bundle
 
 - **Rust-only changes**: Use `just bacon` or `just bcheck` for continuous feedback
 - **UI changes (no Rust API changes)**: Use `just compile-ios` or `just compile-android` for faster iteration
-- **Rust API changes**: Run `just build-ios` or `just build-android` to regenerate bindings
-- **Tests**: Run `just wtest` in a separate terminal for continuous test feedback
+- **Rust API or UniFFI changes**: Run `just build-ios` or `just build-android` to rebuild Rust and regenerate bindings
+- **Tests**: Run `just watch-test` (`just wtest`) in a separate terminal for continuous test feedback
+
+`just build-ios` and `just build-android` rebuild the Rust core, regenerate UniFFI bindings, and update the mobile projects. `just compile-ios` and `just compile-android` only rebuild the native apps, so use them when Rust exports have not changed.
 
 ### Common Commands
 
-| Command | Description |
-|---------|-------------|
-| `just ba` | Build Android debug |
-| `just bi` | Build iOS debug simulator |
-| `just bidd` | Build iOS debug device |
-| `just test` | Run test suite |
-| `just wtest` | Watch mode tests |
-| `just fmt` | Format all code (Rust, Swift, Kotlin) |
-| `just ci` | Run all CI checks |
-| `just clean` | Full cleanup of build artifacts |
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `just build-android` | `just ba` | Build Android debug |
+| `just build-android-release` | `just bar` | Build Android release |
+| `just build-ios` | `just bi` | Build iOS debug simulator |
+| `just build-ios-debug-device` | `just bidd` | Build iOS debug device |
+| `just build-ios-release` | `just bir` | Build iOS release |
+| `just compile-ios` | - | Compile iOS without regenerating bindings |
+| `just compile-android` | - | Compile Android without regenerating bindings |
+| `just test` | - | Run the Rust test suite with nextest |
+| `just watch-test` | `just wtest` | Watch and re-run tests on Rust file changes |
+| `just fmt` | - | Format Rust, Swift, and Android code |
+| `just ci` | - | Run format, lint, compile, and test checks |
+| `just clean` | - | Remove build artifacts |
 
-Run `just` to see all available commands.
+Run `just` to see the public recipes. Aliases are shortcuts for commands you use often.
 
 ### Debugging Tips
 
