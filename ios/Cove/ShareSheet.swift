@@ -108,6 +108,25 @@ enum ShareSheet {
         filename: String,
         completion: @escaping (Bool) -> Void
     ) {
+        guard let bytes = data.data(using: .utf8) else {
+            Log.error("Failed to encode share-sheet payload as UTF-8")
+            completion(false)
+            return
+        }
+        present(data: bytes, filename: filename, completion: completion)
+    }
+
+    /// Presents share sheet for binary data by writing to a temporary file
+    /// - Parameters:
+    ///   - data: the raw bytes to share
+    ///   - filename: the filename to use for the temporary file
+    ///   - completion: called after the share sheet dismisses with success/failure result
+    @MainActor
+    static func present(
+        data: Data,
+        filename: String,
+        completion: @escaping (Bool) -> Void
+    ) {
         guard let windowScene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first,
@@ -123,7 +142,7 @@ enum ShareSheet {
         let fileURL = tempDir.appendingPathComponent(filename)
 
         do {
-            try data.write(to: fileURL, atomically: true, encoding: .utf8)
+            try data.write(to: fileURL, options: .atomic)
         } catch {
             Log.error("Failed to write temp file for share sheet: \(error.localizedDescription)")
             completion(false)
