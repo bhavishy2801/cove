@@ -132,7 +132,7 @@ struct OnboardingHardwareImportFlowView: View {
 
                     OnboardingChoiceCard(
                         title: "Scan with NFC",
-                        subtitle: "If your device supports NFC export, tap it to this iPhone",
+                        subtitle: "Hold your hardware wallet or export tag near the top of your iPhone.",
                         systemImage: "wave.3.right"
                     ) {
                         mode = .nfc

@@ -23915,7 +23915,6 @@ public enum OnboardingAction: Equatable, Hashable {
     case restoreComplete
     case restoreFailed(error: String
     )
-    case verifyWordsCompleted
     case acceptTerms
     case back
 
@@ -23988,11 +23987,9 @@ public struct FfiConverterTypeOnboardingAction: FfiConverterRustBuffer {
         case 21: return .restoreFailed(error: try FfiConverterString.read(from: &buf)
         )
         
-        case 22: return .verifyWordsCompleted
+        case 22: return .acceptTerms
         
-        case 23: return .acceptTerms
-        
-        case 24: return .back
+        case 23: return .back
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -24093,16 +24090,12 @@ public struct FfiConverterTypeOnboardingAction: FfiConverterRustBuffer {
             FfiConverterString.write(error, into: &buf)
             
         
-        case .verifyWordsCompleted:
+        case .acceptTerms:
             writeInt(&buf, Int32(22))
         
         
-        case .acceptTerms:
-            writeInt(&buf, Int32(23))
-        
-        
         case .back:
-            writeInt(&buf, Int32(24))
+            writeInt(&buf, Int32(23))
         
         }
     }

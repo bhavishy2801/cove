@@ -120,7 +120,6 @@ pub enum OnboardingAction {
     ContinueWithoutCloudRestore,
     RestoreComplete,
     RestoreFailed { error: String },
-    VerifyWordsCompleted,
     AcceptTerms,
     Back,
 }
@@ -478,7 +477,7 @@ impl RustOnboardingManager {
 
                 FfiApp::global()
                     .select_wallet(wallet_id, next_route)
-                    .map_err(|error| error.to_string())
+                    .map_err_str(std::convert::identity)
             }
         };
 

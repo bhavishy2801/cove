@@ -361,7 +361,7 @@ private struct OnboardingSoftwareImportCloudBackupChoiceView: View {
                         .foregroundStyle(.coveLightGray.opacity(0.78))
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Text("You can skip this now and enable it later from settings.")
+                    Text("You can skip this now and enable it later from Settings.")
                         .font(.footnote)
                         .foregroundStyle(.coveLightGray.opacity(0.64))
                         .fixedSize(horizontal: false, vertical: true)
@@ -404,7 +404,7 @@ private struct OnboardingHardwareImportCloudBackupChoiceView: View {
                         .foregroundStyle(.coveLightGray.opacity(0.78))
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Text("Enabling this also turns on Cloud Backup for Cove more broadly, so compatible wallets you create later and wallet labels will be backed up too.")
+                    Text("Enabling this also turns on Cloud Backup for Cove more broadly, so compatible wallets you create later, as well as wallet labels, will be backed up.")
                         .font(.footnote)
                         .foregroundStyle(.coveLightGray.opacity(0.72))
                         .fixedSize(horizontal: false, vertical: true)
@@ -414,7 +414,7 @@ private struct OnboardingHardwareImportCloudBackupChoiceView: View {
                         .foregroundStyle(.white.opacity(0.86))
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Text("You can skip this now and enable it later from settings.")
+                    Text("You can skip this now and enable it later from Settings.")
                         .font(.footnote)
                         .foregroundStyle(.coveLightGray.opacity(0.64))
                         .fixedSize(horizontal: false, vertical: true)

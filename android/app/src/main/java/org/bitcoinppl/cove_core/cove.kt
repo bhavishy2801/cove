@@ -40401,9 +40401,6 @@ sealed class OnboardingAction {
         companion object
     }
     
-    object VerifyWordsCompleted : OnboardingAction()
-    
-    
     object AcceptTerms : OnboardingAction()
     
     
@@ -40461,9 +40458,8 @@ public object FfiConverterTypeOnboardingAction : FfiConverterRustBuffer<Onboardi
             21 -> OnboardingAction.RestoreFailed(
                 FfiConverterString.read(buf),
                 )
-            22 -> OnboardingAction.VerifyWordsCompleted
-            23 -> OnboardingAction.AcceptTerms
-            24 -> OnboardingAction.Back
+            22 -> OnboardingAction.AcceptTerms
+            23 -> OnboardingAction.Back
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -40602,12 +40598,6 @@ public object FfiConverterTypeOnboardingAction : FfiConverterRustBuffer<Onboardi
                 + FfiConverterString.allocationSize(value.`error`)
             )
         }
-        is OnboardingAction.VerifyWordsCompleted -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-            )
-        }
         is OnboardingAction.AcceptTerms -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -40715,16 +40705,12 @@ public object FfiConverterTypeOnboardingAction : FfiConverterRustBuffer<Onboardi
                 FfiConverterString.write(value.`error`, buf)
                 Unit
             }
-            is OnboardingAction.VerifyWordsCompleted -> {
+            is OnboardingAction.AcceptTerms -> {
                 buf.putInt(22)
                 Unit
             }
-            is OnboardingAction.AcceptTerms -> {
-                buf.putInt(23)
-                Unit
-            }
             is OnboardingAction.Back -> {
-                buf.putInt(24)
+                buf.putInt(23)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -41157,7 +41143,6 @@ enum class OnboardingStep {
     BACKUP_WALLET,
     CLOUD_BACKUP,
     SECRET_WORDS,
-    VERIFY_WORDS,
     EXCHANGE_FUNDING,
     HARDWARE_IMPORT,
     SOFTWARE_IMPORT,
