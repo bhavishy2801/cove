@@ -97,19 +97,18 @@ Run `just` to see the public recipes. Aliases are shortcuts for commands you use
 3. Fix any issues reported by CI checks
 4. If clippy reports warnings, run `just fix` first to auto-fix what's possible
 5. If you changed Rust exports that generate bindings, run `just build-ios` and `just build-android` before committing
-6. Rebase on the latest `master` if `master` has changed since you started your work
+6. Merge the latest `master` into your branch if `master` has changed since you started your work
 
 ## Commit Messages
 
-Write clear, concise commit messages following these guidelines:
+Write clear, concise commit messages that explain what changed and why. Let the code describe how.
+
+Helpful defaults:
 
 - **Use imperative mood**: "Add feature" not "Added feature"
-- **Limit subject to 50 chars**: Be concise, this is the title
 - **Capitalize the subject line**
 - **No period at the end of the subject**
-- **Separate subject from body with a blank line**
-- **Wrap body at 72 chars**
-- **Explain what and why, not how**: The code shows how
+- **Add a body when it helps explain context or motivation**
 
 Example:
 ```
@@ -126,6 +125,8 @@ See [How to Write a Git Commit Message](https://cbea.ms/git-commit/) for the ful
 
 ## Pull Requests
 
+- If you are addressing review feedback, add follow-up commits instead of squashing so reviewers can easily see what changed since the last review
+- Merge the latest `master` into your branch when needed instead of rebasing. We squash commits when the pull request is merged
 - If changes were requested on your pull request and you addressed them, request review again
 - If you do not get a review within two days, ping Praveen on Discord or tag him in the GitHub pull request
 
